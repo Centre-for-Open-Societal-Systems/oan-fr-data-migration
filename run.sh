@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Run the migration or the verification locally, on the registry that is
 # already there (dev/env.sh: REGISTRY_IMAGE, or a farmer-registry checkout in
-# REGISTRY_REPO), against the local databases: the farmer profile copy in the
-# fp-db container (database $SOURCE_DB, default odk_a) and the target from
-# dev/target-db.sh (or TARGET_DSN). No image is built: this code is mounted,
+# REGISTRY_REPO). Settings come from .env (see .env.example) or the shell;
+# without SOURCE_DSN and TARGET_DSN it uses the local databases: the farmer
+# profile copy in the fp-db container (database $SOURCE_DB, default odk_a) and
+# the target from dev/target-db.sh. No image is built: this code is mounted,
 # and openpyxl (for the Excel reports) is installed once into the
 # fr-migration-pydeps volume.
 #
@@ -29,13 +30,17 @@ OPENPYXL=$(grep -m1 -oP 'openpyxl==\S+' "$MIG_ROOT/Dockerfile")
 have=$(git -C "$PACK_DIR" rev-parse HEAD)
 [ "$have" = "$PACK_REF" ] || { echo "pack $PACK_DIR is at $have, the migration pins $PACK_REF" >&2; exit 1; }
 
-docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$SOURCE_CONTAINER" | grep -qw "$NET" \
-  || docker network connect "$NET" "$SOURCE_CONTAINER"
-user=$(docker exec "$SOURCE_CONTAINER" printenv POSTGRES_USER)
-password=$(docker exec "$SOURCE_CONTAINER" printenv POSTGRES_PASSWORD)
+# SOURCE_DSN from .env or the shell; else the farmer profile copy in the local container
+if [ -z "${SOURCE_DSN:-}" ]; then
+  docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$SOURCE_CONTAINER" | grep -qw "$NET" \
+    || docker network connect "$NET" "$SOURCE_CONTAINER"
+  user=$(docker exec "$SOURCE_CONTAINER" printenv POSTGRES_USER)
+  password=$(docker exec "$SOURCE_CONTAINER" printenv POSTGRES_PASSWORD)
+  SOURCE_DSN="host=$SOURCE_CONTAINER dbname=$SOURCE_DB user=$user password=$password"
+fi
+export SOURCE_DSN
 
 mkdir -p "$MIG_ROOT/out"
-SOURCE_DSN="host=$SOURCE_CONTAINER dbname=$SOURCE_DB user=$user password=$password" \
 docker run --rm --network "$NET" --entrypoint sh \
   -v "$MIG_ROOT:/migration:ro" -v "$PACK_DIR:/pack:ro" -v "$MIG_ROOT/out:/out" -v fr-migration-pydeps:/deps \
   "${EXTENSION_MOUNT[@]}" \

@@ -13,9 +13,19 @@
 # PACK_DIR is a checkout of openg2p-data at OPENG2P_DATA_REF (see Dockerfile).
 
 MIG_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# .env (from .env.example): settings already set in the shell win
+if [ -f "$MIG_ROOT/.env" ]; then
+  while IFS= read -r line; do
+    case "$line" in ''|'#'*) continue;; esac
+    name=${line%%=*}
+    [ -n "${!name+x}" ] || export "$name=${line#*=}"
+  done < "$MIG_ROOT/.env"
+fi
 NET=fr-migration
 REGISTRY_REPO=${REGISTRY_REPO:-$HOME/farmer-registry-develop}
+REGISTRY_REPO=${REGISTRY_REPO/#\~/$HOME}
 PACK_DIR=${PACK_DIR:-$HOME/openg2p-data}
+PACK_DIR=${PACK_DIR/#\~/$HOME}
 PACK_REF=$(grep -m1 -oP 'OPENG2P_DATA_REF=\K\S+' "$MIG_ROOT/Dockerfile")
 
 if [ -n "${REGISTRY_IMAGE:-}" ]; then

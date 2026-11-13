@@ -212,6 +212,9 @@ You need:
   `SOURCE_DB` to pick the database; the default is `odk_a`.
 - **The country pack.** `~/openg2p-data` checked out at `OPENG2P_DATA_REF`
   (see the Dockerfile).
+- **Settings, optional.** Copy `.env.example` to `.env`. `run.sh` and `dev/*.sh`
+  read it; settings exported in the shell win. Without `SOURCE_DSN` and
+  `TARGET_DSN`, the scripts use the local containers above.
 
 ```sh
 dev/target-db.sh reset                    # an empty registry database (container fr-migration-target)
@@ -238,9 +241,17 @@ docker build --build-arg REGISTRY_IMAGE=<the registry's staff-api image:tag> \
   -t <registry>/farmer-profile-migration:<tag> .
 ```
 
-Then run it as a one-off Job: `deploy/job.yaml` has the steps.
+Then run it as a one-off Job: `deploy/job.yaml` has the steps. Or run it
+with Docker, using the `.env`:
 
-It needs these settings:
+```sh
+docker run --rm --env-file .env -v "$PWD/out:/out" <name>:<tag> migrate.py --all --dry-run
+docker run --rm --env-file .env -v "$PWD/out:/out" <name>:<tag> migrate.py --all
+docker run --rm --env-file .env -v "$PWD/out:/out" <name>:<tag> verify.py
+```
+
+It needs these settings. `.env.example` lists them all; copy it to `.env` and
+fill it in:
 
 | Setting | Value |
 |---|---|
