@@ -17,6 +17,44 @@ profile's database, the registry's database, and the Master Data Service.
 | `migrate.py` | Migrates in batches: Python prepares the rows, SQL loads them, or `--sql-out` writes them to a file to review and run with psql. Queues what the registry generates afterwards. Writes the log, summary and Excel report. |
 | `verify.py` | Checks the registry against farmer profile and writes its own log and Excel report; exits 1 if a check fails |
 
+## Quick start (local)
+
+```sh
+cd ~/farmer-registry-migration
+
+./run.sh setup        # once: starts the local Master Data and an empty registry database
+./run.sh dry-run      # migrate everything, then roll back: nothing is kept
+./run.sh migrate      # migrate everything for real
+./run.sh verify       # check the result
+```
+
+The other steps:
+
+```sh
+./run.sh sql          # write migration.sql instead of loading
+./run.sh apply        # run the latest migration.sql on the registry database
+./run.sh fresh        # reset + migrate + verify in one go
+./run.sh summary      # show the latest migrate and verify summaries again
+./run.sh report       # open the latest Excel report
+./run.sh reset        # empty the registry database
+./run.sh test         # run the tests
+./run.sh help         # list all of these
+```
+
+- **Picking farmers:** every farmer is migrated unless you pick some, e.g.
+  `./run.sh dry-run --limit 10` or `./run.sh migrate --ids 12 40`. Options of
+  `migrate.py`, such as `--workers 2` or `--batch-size 200`, pass straight
+  through.
+- **No exports needed:** if `MDS_API_URL` isn't set, `run.sh` uses the local
+  Master Data that `setup` starts. Settings in `.env` (see `.env.example`) are
+  also read.
+- **Latest run:** `apply` and `summary` pick the latest run folder for you.
+- **Low-level runner:** `dev/py.sh` runs `migrate.py` or `verify.py` with any
+  arguments, e.g. `dev/py.sh migrate --all --dry-run`.
+
+What you need on the machine is under "Run it locally" below. For a server,
+see "Deploy".
+
 ## Master Data decides what is migrated
 
 Code lists and locations belong to the Master Data Service. The registry
@@ -229,31 +267,12 @@ You need:
   read it; settings exported in the shell win. Without `SOURCE_DSN` and
   `TARGET_DSN`, the scripts use the local containers above.
 
-```sh
-./run.sh setup        # once: the local Master Data and an empty registry database
-./run.sh dry-run      # everything, rolled back: read the summary it prints
-./run.sh migrate      # everything, for real
-./run.sh verify       # check it
-./run.sh summary      # the latest summaries again;  ./run.sh report  opens the Excel report
+The commands are under "Quick start" at the top. To check against the country
+pack instead of Master Data, add `--pack-only`.
 
-./run.sh sql          # or: write migration.sql instead of loading ...
-./run.sh apply        # ... and run it (the latest one) on the registry database
-
-./run.sh fresh        # reset + migrate + verify in one go
-./run.sh reset        # empty the registry database
-./run.sh test         # the tests
-./run.sh help         # all of this
-```
-
-Every farmer is migrated unless you pick some, as in `./run.sh dry-run --limit 10`
-or `./run.sh migrate --ids 12 40`. Other options of `migrate.py` go through as
-they are, e.g. `--workers 2` or `--batch-size 200`. If `MDS_API_URL` isn't set,
-the local Master Data stand-in from `./run.sh setup` is used. With `--pack-only`,
-the country pack is used instead.
-
-
-`run.sh` (through `dev/py.sh`) mounts this code into the registry's image,
-so no image is built locally. It installs `openpyxl` once into the `fr-migration-pydeps` volume.
+`run.sh` (through `dev/py.sh`) mounts this code into the registry's image, so
+no image is built locally. It installs `openpyxl` once into the
+`fr-migration-pydeps` volume.
 
 ## Deploy
 
