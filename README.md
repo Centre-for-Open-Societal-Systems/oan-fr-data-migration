@@ -55,6 +55,89 @@ The other steps:
 What you need on the machine is under "Run it locally" below. For a server,
 see "Deploy".
 
+## Files
+
+### What's in this repository
+
+```
+run.sh                    the local commands: setup, dry-run, migrate, sql, apply, verify, ...
+migrate.py                the migration: reads, transforms, checks, loads (or writes migration.sql), reports
+verify.py                 the verification: checks the registry against farmer profile and Master Data
+farmer_profile/           the migration's code
+  source.py                 reads farmer profile (Odoo) read-only: which farmers, and all their data
+  transform.py              Odoo rows -> registry rows; every value it can't carry over becomes an issue
+  codes.py                  Odoo values -> registry codes (gender, crops, income, land, ...)
+  geo.py                    old location codes -> P-codes, and their hierarchy
+  masterdata.py             loads Master Data's code lists and locations; only values it has are kept
+  load.py                   runs the registry's hooks in memory, then COPY + INSERT, or writes migration.sql
+  finalize.py               queues the functional ids and completion scores the registry generates
+  fieldmap.py               what happens to every farmer profile field, where every registry column comes from
+  inventory.py              counts, on both sides, how many records hold each field (for the report)
+  report.py                 writes the Excel reports
+  summary.py                writes summary.txt
+  runlog.py                 the run folder and the log
+  verification.py           the checks verify.py runs
+tests/                    tests (./run.sh test)
+Dockerfile                the job image, built on the registry's own staff-api image
+deploy/job.yaml           runs the image as a one-off Kubernetes Job
+.env.example              every setting, to copy to .env (.env is never committed)
+dev/                      local helpers, used by run.sh
+  py.sh                     runs migrate.py or verify.py in the registry's image
+  env.sh                    shared settings: which registry, which pack, .env
+  target-db.sh              a local, empty registry database (container fr-migration-target)
+  create_schema.py          creates the registry's tables in it
+  fake-mds.sh, fake_mds.py  a local stand-in for the Master Data Service (container fr-migration-mds)
+  test.sh                   runs the tests in the registry's image
+```
+
+### What it creates
+
+**A folder per run,** in `out/` locally (`/out` in the image). It's named
+`<UTC time>-migrate` or `<UTC time>-verify`, and nothing is overwritten, so
+the folders are the record of every run. `out/` is not committed.
+
+| File | Run | Contents |
+|---|---|---|
+| `summary.txt` | both | The summary printed at the end of the run. For a migration: records read, added and already there; farmer profile fields per status, and how many hold data; registry columns per status, and how many are filled; what was queued after the load; the data that didn't reach the registry; the issues by kind. For a verification: the verdict and every check that didn't pass. |
+| `migrate.log` / `verify.log` | both | The full log, also printed: settings (passwords masked), every batch with its counts and time, errors with their traceback, and the summary |
+| `summary.json` | both | The same counts, for scripts |
+| `migration-report.xlsx` | migrate | Sheets: Summary, Farmer profile fields, Gen2 columns, Issues summary, Issues, Batches (see "Reports" below) |
+| `issues.csv` | migrate | Every issue: a value left out, a record not migrated, or something worth a look |
+| `migration.sql` | migrate with `sql` / `--sql-out` | The load as one SQL transaction, to review and run with psql (`./run.sh apply` locally) |
+| `verify-report.xlsx` | verify | Sheets: Summary with the verdict, Checks, Columns (values compared per column), Differences |
+| `differences.csv` | verify | Every value that differs |
+
+**In the registry database,** written by `migrate` or `apply`, never by a dry
+run, `sql` or `verify`:
+
+- **The records:** households, farmers, household members, phone numbers,
+  lands and crops in their `g2p_register_*` tables. Each one is marked
+  `created_by = 'farmer-profile-migration'`, and its id comes from its Odoo
+  record.
+- **Queued work for the registry's workers:** rows in
+  `g2p_functional_id_generation_queue` (farmer and household ids) and
+  `g2p_completion_score_computation_queue` (farmer completion scores).
+
+Farmer profile is only ever read.
+
+**Locally, in Docker,** set up by `./run.sh setup`:
+
+| What | Name | For |
+|---|---|---|
+| Container | `fr-migration-target` | The local registry database (Postgres, port 55440). `./run.sh reset` empties it. |
+| Container | `fr-migration-mds` | The local Master Data stand-in |
+| Network | `fr-migration` | Joins them. The `fp-db` farmer profile container is attached to it. |
+| Volume | `fr-migration-pydeps` | `openpyxl` and `pytest`, installed once |
+
+To remove all of it:
+
+```sh
+docker rm -f fr-migration-target fr-migration-mds
+docker network disconnect fr-migration fp-db
+docker network rm fr-migration
+docker volume rm fr-migration-pydeps
+```
+
 ## Master Data decides what is migrated
 
 Code lists and locations belong to the Master Data Service. The registry
@@ -98,21 +181,9 @@ dev/fake-mds.sh CROP_TEFF,ET04041110        # Master Data without teff and one k
 ./run.sh migrate
 ```
 
-## What a run leaves behind
+## Reports
 
-Every run writes a new folder under the report directory (`/out` in the image,
-`out/` locally), named `<UTC time>-migrate` or `<UTC time>-verify`.
-Nothing is overwritten, so the folders are the record of every run.
-
-| File | Contents |
-|---|---|
-| `migrate.log` / `verify.log` | The log, also printed: settings (passwords masked), every batch with its counts and time, errors with their traceback, and the summary |
-| `summary.txt` | The summary printed at the end of the run. For a migration: records read, added and already there; farmer profile fields per status, and how many hold data; Gen2 columns per status, and how many are filled; what was queued after the load; the fields holding data that didn't reach Gen2; the issues by kind. For a verification: the verdict and every check that didn't pass |
-| `migration-report.xlsx` | Summary, Farmer profile fields, Gen2 columns, Issues summary, Issues, Batches |
-| `issues.csv` | Every issue: a value left out, a record not migrated, or something worth a look |
-| `verify-report.xlsx` | Summary with the verdict, Checks, Columns (values compared per column), Differences |
-| `differences.csv` | Every value that differs |
-| `summary.json` | The counts, for scripts |
+The files themselves are listed under "What it creates" above.
 
 ### The field report
 
