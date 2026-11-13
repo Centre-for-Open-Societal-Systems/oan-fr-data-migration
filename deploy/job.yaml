@@ -1,0 +1,73 @@
+# The migration as a one-off Kubernetes Job in the registry's namespace.
+# Not part of the Helm chart: it runs when someone decides to, not on every deploy.
+#
+# 1. Build and push the image (Dockerfile, --build-arg REGISTRY_IMAGE=<the registry's staff-api image>).
+# 2. Create the secret with both connection strings (never commit it):
+#      kubectl -n <ns> create secret generic farmer-profile-migration \
+#        --from-literal=SOURCE_DSN='host=<odoo db host> port=5432 dbname=<odoo db> user=<read-only user> password=<...>' \
+#        --from-literal=TARGET_DSN='postgresql+psycopg2://<registry user>:<...>@<registry db host>:5432/<registry db>'
+#    The source user should be read-only; the migration also opens its session read-only.
+#    Master Data: set MDS_API_URL and MDS_TOKEN_URL below as the registry's chart has them
+#    (global.masterDataApiUrl, global.masterDataTokenUrl), MDS_CLIENT_ID to global.authClientId,
+#    and add MDS_CLIENT_SECRET to the secret:  --from-literal=MDS_CLIENT_SECRET='<the client's secret>'
+#    Only codes and locations Master Data has are migrated; a run without MDS_API_URL refuses to start.
+# 3. Set the image and args below, then:  kubectl -n <ns> apply -f job.yaml
+#    Follow it:                           kubectl -n <ns> logs -f job/farmer-profile-migration
+# 4. Get the run folders (log, Excel report, issues.csv) from the volume, e.g. with a
+#    pod that mounts the claim:           kubectl -n <ns> cp <pod>:/out ./migration-runs
+# 5. Verify: the same Job with args ["verify.py"] (a new name, e.g. farmer-profile-verify).
+#
+# Rerunning the same Job is safe: records already migrated are left alone.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: farmer-profile-migration-runs
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: farmer-profile-migration
+  labels:
+    app.kubernetes.io/name: farmer-profile-migration
+spec:
+  backoffLimit: 0          # a failed run is looked at, not retried blind
+  ttlSecondsAfterFinished: 604800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: farmer-profile-migration
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: REGISTRY/farmer-profile-migration:TAG
+          # First a dry run on a few farmers, then everything:
+          #   ["migrate.py", "--limit", "100", "--dry-run"]
+          #   ["migrate.py", "--all", "--batch-size", "500"]
+          #   ["verify.py"]
+          args: ["migrate.py", "--all", "--batch-size", "500"]
+          env:
+            - name: MDS_API_URL
+              value: http://commons-services-master-data-api
+            - name: MDS_TOKEN_URL
+              value: https://KEYCLOAK/realms/REALM/protocol/openid-connect/token
+            - name: MDS_CLIENT_ID
+              value: REGISTRY_CLIENT_ID
+          envFrom:
+            - secretRef:
+                name: farmer-profile-migration
+          volumeMounts:
+            - name: runs
+              mountPath: /out
+          resources:
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {memory: 3Gi}
+      volumes:
+        - name: runs
+          persistentVolumeClaim:
+            claimName: farmer-profile-migration-runs
