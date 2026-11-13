@@ -14,7 +14,7 @@ profile's database, the registry's database, and the Master Data Service.
 
 | Program | What it does |
 |---|---|
-| `migrate.py` | Migrates in batches, queues what the registry generates afterwards, writes the log and the Excel report |
+| `migrate.py` | Migrates in batches: Python prepares the rows, SQL loads them, or `--sql-out` writes them to a file to review and run with psql. Queues what the registry generates afterwards. Writes the log, summary and Excel report. |
 | `verify.py` | Checks the registry against farmer profile and writes its own log and Excel report; exits 1 if a check fails |
 
 ## Master Data decides what is migrated
@@ -151,16 +151,29 @@ history starts empty.
      that doesn't map falls back to the next level up, and this is reported.
    - **Issues.** A value that can't be carried over is left empty and recorded
      as an issue. Nothing is guessed.
-4. **Write.** `load.py` writes each batch in one transaction, through the
-   registry's models, so the registry's insert hooks run.
+4. **Finish the rows.** `load.prepare` makes each row the registry's own
+   model object and runs the registry's insert hooks on it, in memory:
+   `search_text`, `record_name`, and the extension's readable names. These
+   are the hooks the registry runs when it saves a record, and they only read
+   the record, so no database is needed. This is the slow part, so batches are
+   prepared in parallel worker processes (`--workers`).
+5. **Load with SQL.** One writer loads the batches in order. Each batch is
+   `COPY`'d into a temporary table, then inserted with
+   `INSERT … SELECT … ON CONFLICT (internal_record_id) DO NOTHING`, in one
+   transaction per batch. This is how the SQL speed and the Python checks go
+   together: everything is decided in Python, and only the finished rows go to
+   SQL. With `--sql-out`, the same statements go to a file instead (below).
+   - **Same result as the registry:** loaded rows match rows saved through the
+     registry's models value for value. This was checked on all 4,966 rows of
+     the local data, computed columns included.
    - **Record ids** are uuid5 of the Odoo record (`farmer-profile/<kind>/<odoo id>`).
      A record that is already there is left alone, so a rerun only adds what's
      missing.
    - **After a failed batch,** the batch is rolled back. Run the same command
      again: the earlier batches are found and skipped.
-5. **Finalize.** `finalize.py` queues the functional ids and completion
+6. **Finalize.** `finalize.py` queues the functional ids and completion
    scores described above.
-6. **Report.** `inventory.py` counts the values on both sides, and `report.py`
+7. **Report.** `inventory.py` counts the values on both sides, and `report.py`
    writes the workbook.
 
 ### Decisions in the transform
@@ -260,6 +273,31 @@ fill it in:
 | `MDS_API_URL`, `MDS_TOKEN_URL`, `MDS_CLIENT_ID`, `MDS_CLIENT_SECRET` | The Master Data Service the registry uses. See "Master Data decides what is migrated" above. |
 | `/out` | A volume for the run folders |
 
+### Two ways to load
+
+- **Direct (default):** each batch is loaded into the registry as soon as it's
+  ready.
+- **A SQL file to review first:** `migrate.py --all --sql-out` writes
+  `migration.sql` in the run folder and only reads the registry. Python does
+  everything as in a direct run: transform, Master Data check, hooks, and the
+  report with every issue. Then:
+
+  1. **Review it.** The header says what it is. Each table's finished rows are
+     `COPY` data into a temporary table. The changes come at the end, readable:
+     one `INSERT … ON CONFLICT DO NOTHING` per table, then the functional-id
+     and completion-score queueing.
+  2. **Run it** in one transaction. If any statement fails, nothing is kept:
+     ```sh
+     psql -v ON_ERROR_STOP=1 -f migration.sql "<registry database>"
+     ```
+     psql prints the rows each table got. Running it a second time adds
+     nothing.
+  3. **Run `verify.py`**, as after a direct run.
+
+  The file is a snapshot. Generate it close to when you run it, because
+  records changed in farmer profile or Master Data afterwards aren't in it.
+  Locally it's about 4.5 KB per farmer.
+
 Run these in order:
 
 1. `migrate.py --limit 100 --dry-run`: writes each batch and rolls it back.
@@ -274,6 +312,8 @@ Options:
 | Option | Effect |
 |---|---|
 | `--batch-size N` | Farmers per transaction. The default is 500. |
+| `--workers N` | Processes preparing batches in parallel. The default is up to 4. |
+| `--sql-out` | Writes `migration.sql` instead of loading. See "Two ways to load". |
 | `--keep-going` | Logs a failed batch and continues. By default the run stops. |
 | `--no-finalize` | Doesn't queue the functional ids and scores |
 | `--finalize-only` | Only queues them |

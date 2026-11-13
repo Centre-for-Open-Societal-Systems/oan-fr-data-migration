@@ -129,7 +129,7 @@ def _linked_count(cur, f, base, params):
 def target_columns(engine, written=None) -> list[dict]:
     """One row per column of the Gen2 registers in scope, with its status and
     how many migrated records hold a value: counted in the registry, or, for
-    a dry run (nothing kept), in the rows the run would have written
+    a dry run or a SQL file (nothing written), in the finished rows of the run
     (written: register -> {"rows": n, "columns": Counter})."""
     models = importlib.import_module("openg2p_registry_extensions.register_domain.models")
     out = []
@@ -150,20 +150,21 @@ def target_columns(engine, written=None) -> list[dict]:
                 sources = F.sources_of(register, column)
                 status, how = F.target_status(register, column, sources)
                 n = filled[column]
-                if written is not None and status == F.REGISTRY:
-                    n = None  # the registry fills it on insert: not known without writing
                 out.append({"register": register, "table": table, "column": column, "status": status,
                              "farmer_profile": ", ".join(f"{m}.{n_}" for m, n_ in sources), "how": how,
                              "migrated_rows": total, "rows_with_value": n})
     return out
 
 
-def count_written(written: dict, result) -> None:
-    """Add a transformed batch's rows to written (see target_columns)."""
-    for register, rows in result.tables():
-        mine = written.setdefault(register, {"rows": 0, "columns": collections.Counter()})
+def count_written(written: dict, prepared) -> None:
+    """Add a batch's finished rows (load.Prepared) to written (see target_columns)."""
+    import importlib as _il
+    models = _il.import_module("openg2p_registry_extensions.register_domain.models")
+    register_of = {getattr(models, f"G2PRegister{r}").__tablename__: r for r in F.REGISTERS}
+    for table, (names, rows) in prepared.items():
+        mine = written.setdefault(register_of[table], {"rows": 0, "columns": collections.Counter()})
         mine["rows"] += len(rows)
         for row in rows:
-            for column, value in row.items():
+            for name, value in zip(names, row):
                 if value is not None and value != "" and value != []:
-                    mine["columns"][column] += 1
+                    mine["columns"][name] += 1

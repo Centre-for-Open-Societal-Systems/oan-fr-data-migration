@@ -32,7 +32,9 @@ def migration(info: dict, totals: dict, source_fields: list, target_cols: list, 
               issue_counts: collections.Counter, failed: list, dry_run: bool, files: list) -> list[str]:
     out = []
     add = out.append
-    title = "MIGRATION SUMMARY" + ("  (DRY RUN: every batch rolled back, nothing kept)" if dry_run else "")
+    sql_out = str(info.get("Mode", "")).startswith("SQL file")
+    title = "MIGRATION SUMMARY" + ("  (DRY RUN: every batch rolled back, nothing kept)" if dry_run else
+                                   "  (SQL FILE: nothing written; run migration.sql to load)" if sql_out else "")
     add("=" * 78)
     add(title)
     add("=" * 78)
@@ -45,8 +47,8 @@ def migration(info: dict, totals: dict, source_fields: list, target_cols: list, 
     add(f"{'Records':34}{'read':>10}{'added':>10}{'already there':>15}")
     for table, c in totals.items():
         add(f"  {table.replace('g2p_register_', ''):32}{c['rows']:>10}{c['added']:>10}{c['already there']:>15}")
-    if dry_run:
-        add("  (dry run: 'added' is what a real run would add)")
+    if dry_run or sql_out:
+        add("  ('added' is what loading would add)")
     add("")
 
     add(f"{f'Farmer profile fields ({len(source_fields)})':44}{'fields':>8}{'holding data':>16}")
@@ -65,12 +67,14 @@ def migration(info: dict, totals: dict, source_fields: list, target_cols: list, 
         data[c["status"]] += _has(c["rows_with_value"])
     for status in F.TARGET_STATUSES:
         add(f"  {_TARGET_LABELS[status]:42}{count[status]:>8}{data[status]:>16}")
-    if dry_run:
-        add("  (dry run: counted in the rows the run would write; registry-set columns not counted)")
+    if dry_run or sql_out:
+        add("  (counted in the finished rows of this run)")
     add("")
 
     add("Generated after the load")
-    if dry_run:
+    if sql_out:
+        add("  in migration.sql, after the inserts" if not failed else "  not in migration.sql: a batch failed")
+    elif dry_run:
         add("  not queued: dry run")
     elif failed:
         add("  not queued: a batch failed (rerun the same command)")
@@ -111,6 +115,10 @@ def migration(info: dict, totals: dict, source_fields: list, target_cols: list, 
         add(f"FAILED batch {b} (Odoo ids {ids[0]}..{ids[-1]}): {exc}")
     if failed:
         add("Rerun the same command: finished batches are skipped, failed ones retried.")
+        add("")
+    if sql_out and not failed:
+        add("Load it:  psql -v ON_ERROR_STOP=1 -f " + info["Run"] + "/migration.sql <registry database>")
+        add("Then run verify.py.")
         add("")
     add("Files in " + info["Run"] + ": " + ", ".join(files))
     add("=" * 78)
