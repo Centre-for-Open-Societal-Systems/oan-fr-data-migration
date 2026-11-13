@@ -118,6 +118,7 @@ def migration(info: dict, totals: dict, source_fields: list, target_cols: list, 
         add("")
     if sql_out and not failed:
         add("Load it:  psql -v ON_ERROR_STOP=1 -f " + info["Run"] + "/migration.sql <registry database>")
+        add("          (locally: ./run.sh apply)")
         add("Then run verify.py.")
         add("")
     add("Files in " + info["Run"] + ": " + ", ".join(files))

@@ -4,7 +4,7 @@
 #
 #   dev/fake-mds.sh                       everything in the pack
 #   dev/fake-mds.sh CROP_TEFF,ET04041110  without these codes / P-codes
-#   MDS_API_URL=http://fr-migration-mds:8000 ./run.sh migrate --limit 10
+#   ./run.sh dry-run --limit 10      (run.sh uses it when MDS_API_URL is not set)
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 docker rm -f fr-migration-mds >/dev/null 2>&1 || true

@@ -57,7 +57,7 @@ leave values out to show what happens to them:
 
 ```sh
 dev/fake-mds.sh CROP_TEFF,ET04041110        # Master Data without teff and one kebele
-MDS_API_URL=http://fr-migration-mds:8000 ./run.sh migrate --all
+./run.sh migrate
 ```
 
 ## What a run leaves behind
@@ -230,19 +230,30 @@ You need:
   `TARGET_DSN`, the scripts use the local containers above.
 
 ```sh
-dev/target-db.sh reset                    # an empty registry database (container fr-migration-target)
-dev/fake-mds.sh                           # a local Master Data (or set MDS_API_URL to a real one)
-export MDS_API_URL=http://fr-migration-mds:8000
-./run.sh migrate --all --dry-run          # everything, rolled back: read summary.txt
-./run.sh migrate --limit 10 --complete    # 10 farmers with a household, land and crop
-./run.sh migrate --all --batch-size 500   # every farmer
-./run.sh verify                           # check everything
-dev/test.sh                               # the tests
-# without any Master Data: add --pack-only to migrate and verify
+./run.sh setup        # once: the local Master Data and an empty registry database
+./run.sh dry-run      # everything, rolled back: read the summary it prints
+./run.sh migrate      # everything, for real
+./run.sh verify       # check it
+./run.sh summary      # the latest summaries again;  ./run.sh report  opens the Excel report
+
+./run.sh sql          # or: write migration.sql instead of loading ...
+./run.sh apply        # ... and run it (the latest one) on the registry database
+
+./run.sh fresh        # reset + migrate + verify in one go
+./run.sh reset        # empty the registry database
+./run.sh test         # the tests
+./run.sh help         # all of this
 ```
 
-`run.sh` mounts this code into the registry's image, so no image is built
-locally. It installs `openpyxl` once into the `fr-migration-pydeps` volume.
+Every farmer is migrated unless you pick some, as in `./run.sh dry-run --limit 10`
+or `./run.sh migrate --ids 12 40`. Other options of `migrate.py` go through as
+they are, e.g. `--workers 2` or `--batch-size 200`. If `MDS_API_URL` isn't set,
+the local Master Data stand-in from `./run.sh setup` is used. With `--pack-only`,
+the country pack is used instead.
+
+
+`run.sh` (through `dev/py.sh`) mounts this code into the registry's image,
+so no image is built locally. It installs `openpyxl` once into the `fr-migration-pydeps` volume.
 
 ## Deploy
 
