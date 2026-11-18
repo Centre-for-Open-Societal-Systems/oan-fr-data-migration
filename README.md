@@ -84,7 +84,7 @@ farmer_profile/           the migration's code
 tests/                    tests (./run.sh test)
 Dockerfile                the job image, built on the registry's own staff-api image
 deploy/job.yaml           runs the image as a one-off Kubernetes Job
-docs/                     migration approach, presentation, and demo runbook
+docs/                     technical migration approach
 .env.example              every setting, to copy to .env (.env is never committed)
 dev/                      local helpers, used by run.sh
   py.sh                     runs migrate.py or verify.py in the registry's image
@@ -93,7 +93,6 @@ dev/                      local helpers, used by run.sh
   create_schema.py          creates the registry's tables in it
   fake-mds.sh, fake_mds.py  a local stand-in for the Master Data Service (container fr-migration-mds)
   test.sh                   runs the tests in the registry's image
-  fixtures/                 optional SQL fixtures used by the presentation runbook
 ```
 
 ### What it creates
