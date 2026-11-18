@@ -1,4 +1,4 @@
-# Farmer profile to Farmer registry migration
+# Farmer Profile to Farmer Registry Migration
 
 Moves the farmer profile registry (Odoo, `g2p_ati`) into the Farmer registry
 (OpenG2P Registry 1.2, `farmer-registry`): farmers, households and their
@@ -6,6 +6,10 @@ members, phone numbers, lands and crops. The migration reads farmer profile's
 database read-only and writes the registry's register tables directly through
 the registry's own models. It does not go through the intake forms, which need
 two approvals per record.
+
+> **Safety model:** the source connection is explicitly read-only, target writes
+> are transactional and idempotent, dry runs are rolled back, and an independent
+> verification command compares migrated records with the source.
 
 This repository holds only the migration. It runs on the registry that is
 already deployed: its image is built on the registry's staff-api image, which
@@ -80,6 +84,7 @@ farmer_profile/           the migration's code
 tests/                    tests (./run.sh test)
 Dockerfile                the job image, built on the registry's own staff-api image
 deploy/job.yaml           runs the image as a one-off Kubernetes Job
+docs/                     migration approach, presentation, and demo runbook
 .env.example              every setting, to copy to .env (.env is never committed)
 dev/                      local helpers, used by run.sh
   py.sh                     runs migrate.py or verify.py in the registry's image
@@ -88,6 +93,7 @@ dev/                      local helpers, used by run.sh
   create_schema.py          creates the registry's tables in it
   fake-mds.sh, fake_mds.py  a local stand-in for the Master Data Service (container fr-migration-mds)
   test.sh                   runs the tests in the registry's image
+  fixtures/                 optional SQL fixtures used by the presentation runbook
 ```
 
 ### What it creates

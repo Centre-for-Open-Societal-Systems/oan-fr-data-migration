@@ -10,7 +10,7 @@ SELECT p.id, p.given_name, p.family_name, p.gf_name_eng, p.first_name_amh, p.fam
        p.gender, p.birthdate, p.age_int, p.martial_status, p.education, p.is_disabled, p.farming_type,
        p.has_personal_phone, p.has_national_id, p.hh_is_household_head, p.is_psnp_user, p.email,
        p.registration_date, p.partner_latitude, p.partner_longitude, p.farmer_id, p.state, p.rejection_reason,
-       p.odk_instance_id, p.is_duplicated, p.size_of_family, p.number_of_children_in_family,
+       p.odk_instance_id, NULL::boolean AS is_duplicated, p.size_of_family, p.number_of_children_in_family,
        p.number_of_males_in_family, p.number_of_females_in_family, p.other_family_member_own_land,
        p.other_farmer_in_hh, p.father_included, p.mother_included, p.create_date, p.write_date,
        p.is_farmer, p.occupation, p.address, p.first_name_other, p.family_name_other, p.gf_name_other,
