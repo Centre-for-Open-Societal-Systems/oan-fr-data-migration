@@ -24,7 +24,7 @@ profile's database, the registry's database, and the Master Data Service.
 ## Quick start (local)
 
 ```sh
-cd ~/farmer-registry-migration
+cd ~/farmer-registry-migration-db-to-db
 
 ./run.sh setup        # once: starts the local Master Data and an empty registry database
 ./run.sh dry-run      # migrate everything, then roll back: nothing is kept
