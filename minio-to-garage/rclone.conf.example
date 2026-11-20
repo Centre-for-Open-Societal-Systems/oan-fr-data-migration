@@ -1,0 +1,20 @@
+# Copy to rclone.conf, fill in the keys, chmod 600. rclone.conf is git-ignored.
+
+# The MinIO the farmer profile uses today
+[old]
+type = s3
+provider = Minio
+endpoint = http://172.16.16.231:9000
+access_key_id = <MinIO access key>
+secret_access_key = <MinIO secret key>
+region = eu-west-2
+
+# The new Garage (its s3_region must be us-east-1, see README)
+[garage]
+type = s3
+provider = Other
+endpoint = http://<GARAGE_IP>:3900
+access_key_id = <Garage key id, GK...>
+secret_access_key = <Garage secret key>
+region = us-east-1
+force_path_style = true
