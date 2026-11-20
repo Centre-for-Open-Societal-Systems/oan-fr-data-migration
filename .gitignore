@@ -221,3 +221,32 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- Project-specific rules ----
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Generated migration evidence and reports
+out/
+*.log
+*.xlsx
+*.zip
+
+# Local dependency checkout. The pinned revision is fetched by Dockerfile.
+openg2p-data/
+
+# Editor and operating-system files
+.*.swp
+*~
+.DS_Store
+.idea/
+.vscode/
