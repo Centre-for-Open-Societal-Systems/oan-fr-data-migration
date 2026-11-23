@@ -1,0 +1,4 @@
+rclone.conf
+logs/
+*.log
+__pycache__/
