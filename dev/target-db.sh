@@ -28,7 +28,7 @@ for _ in $(seq 1 120); do
 done
 
 echo "tables, from $IMAGE"
-docker run --rm --network "$NET" --entrypoint python -v "$MIG_ROOT/dev:/dev-scripts:ro" "${EXTENSION_MOUNT[@]}" \
+docker run --rm --network "$NET" --entrypoint python -v "$MIG_ROOT/dev:/dev-scripts:ro" ${EXTENSION_MOUNT[@]+"${EXTENSION_MOUNT[@]}"} \
   -e PYTHONPATH="${EXTENSION_PATH}" -e REGISTRY_EXTENSION_MODULE="${REGISTRY_EXTENSION_MODULE:-openg2p_registry_farmer_extension}" \
   -e TARGET_DSN="postgresql+psycopg2://postgres@$NAME/registry" \
   "$IMAGE" /dev-scripts/create_schema.py

@@ -26,7 +26,7 @@ REGISTRY_REPO=${REGISTRY_REPO:-$HOME/farmer-registry-develop}
 REGISTRY_REPO=${REGISTRY_REPO/#\~/$HOME}
 PACK_DIR=${PACK_DIR:-$HOME/openg2p-data}
 PACK_DIR=${PACK_DIR/#\~/$HOME}
-PACK_REF=$(grep -m1 -oP 'OPENG2P_DATA_REF=\K\S+' "$MIG_ROOT/Dockerfile")
+PACK_REF=$(sed -n 's/^ARG OPENG2P_DATA_REF=//p' "$MIG_ROOT/Dockerfile")
 
 if [ -n "${REGISTRY_IMAGE:-}" ]; then
   IMAGE=$REGISTRY_IMAGE
@@ -37,7 +37,7 @@ else
     echo "set REGISTRY_IMAGE (a registry image with the Farmer extension) or REGISTRY_REPO (a farmer-registry checkout)" >&2
     exit 1
   }
-  IMAGE=openg2p/openg2p-registry-staff-api:$(grep -m1 -oP 'BASE_IMAGE_VERSION=\K\S+' "$REGISTRY_REPO/docker/staff-api/Dockerfile")
+  IMAGE=openg2p/openg2p-registry-staff-api:$(sed -n 's/.*BASE_IMAGE_VERSION=\([^ ]*\).*/\1/p' "$REGISTRY_REPO/docker/staff-api/Dockerfile" | head -1)
   EXTENSION_MOUNT=(-v "$REGISTRY_REPO/farmer-extension/src:/registry-extension:ro")
   EXTENSION_PATH=/registry-extension
 fi
