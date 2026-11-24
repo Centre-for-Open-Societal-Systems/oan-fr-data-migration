@@ -241,7 +241,19 @@ it really is the same data (Odoo gives a copy a new uuid), confirm with
 (`deploy/migration-schema.sql`): `run`, `household_progress`, `migrated_record`,
 `issue`. A run creates them if it may; otherwise a DBA runs the file. They hold
 personal data: give them the access rules of the register tables. A dry run
-doesn't write them. For example, what is open:
+doesn't write them.
+
+`migrated_record` has every record that is in, with its id in farmer profile (Odoo)
+and its id in the registry: farmers, households, members, phones, lands and crops,
+and the household and member made for a farmer in none (`solo_household`,
+`solo_member`, under the farmer's Odoo id). To find either from the other:
+
+```sql
+SELECT gen2_id FROM migration.migrated_record WHERE kind = 'farmer' AND odoo_id = 12;
+SELECT kind, odoo_id FROM migration.migrated_record WHERE gen2_id = '<internal_record_id>';
+```
+
+What is open:
 
 ```sql
 SELECT severity, entity, odoo_id, field, value, reason

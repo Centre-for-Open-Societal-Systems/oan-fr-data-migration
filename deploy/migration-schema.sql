@@ -39,10 +39,14 @@ CREATE TABLE IF NOT EXISTS migration.household_progress (
 );
 CREATE INDEX IF NOT EXISTS household_progress_status ON migration.household_progress (status);
 
--- Which farmers and households of farmer profile are in, and with which entry above
+-- Every record that is in: its id in farmer profile (Odoo) and its id in the registry.
+-- A farmer in no household is given one: those two records (solo_household, solo_member)
+-- are in no Odoo table, and odoo_id is the farmer's. A member's odoo_id is the membership's.
 CREATE TABLE IF NOT EXISTS migration.migrated_record (
-  kind           text NOT NULL CHECK (kind IN ('farmer', 'household')),
+  kind           text NOT NULL CHECK (kind IN ('farmer', 'household', 'member', 'phone', 'land', 'crop',
+                                               'solo_household', 'solo_member')),
   odoo_id        bigint NOT NULL,
+  gen2_id        text NOT NULL UNIQUE,    -- internal_record_id in the registry
   household_key  text NOT NULL,
   PRIMARY KEY (kind, odoo_id)
 );

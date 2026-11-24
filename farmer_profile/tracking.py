@@ -7,7 +7,7 @@ transaction) and by migration.sql.
 
   run                 one row per execution
   household_progress  LOADED, FAILED or CHANGED per household: what a rerun resumes from
-  migrated_record     which farmers and households are in, with which entry
+  migrated_record     every record that is in: its Odoo id and its registry id
   issue               every problem once, OPEN or RESOLVED
 """
 import contextlib
@@ -155,7 +155,8 @@ class State:
                     (farmers, households)):
                 self.owner[(kind, odoo_id)] = key
             for kind, odoo_id, key in conn.exec_driver_sql(
-                    "SELECT kind, odoo_id, household_key FROM migration.migrated_record WHERE household_key = ANY(%s)",
+                    "SELECT kind, odoo_id, household_key FROM migration.migrated_record "
+                    "WHERE household_key = ANY(%s) AND kind IN ('farmer', 'household')",
                     (list(set(self.owner.values())),)):
                 self.records.setdefault(key, set()).add((kind, odoo_id))
 
@@ -179,7 +180,22 @@ class NoState:
 
 
 def records_of(unit) -> set:
+    """What makes a unit the one it is: its farmers and households."""
     return {("farmer", f) for f in unit.farmers} | {("household", h) for h in unit.households}
+
+
+def links(unit, data, gen2_ids) -> list[tuple]:
+    """(kind, Odoo id, registry id) of a unit's records. data: its rows as read;
+    gen2_ids: the ids of its finished rows. A record that is not migrated (a
+    dropped phone, a skipped crop) is not among them."""
+    wanted = [(kind, row["id"], record_id(kind, row["id"])) for kind, part in (
+        ("household", "households"), ("farmer", "farmers"), ("member", "memberships"), ("phone", "phones"),
+        ("land", "lands"), ("crop", "crops")) for row in data[part]]
+    if not unit.households:
+        for f in unit.farmers:
+            wanted += [("solo_household", f, record_id("household", f"solo-{f}")),
+                       ("solo_member", f, record_id("member", f"solo-{f}"))]
+    return [link for link in wanted if link[2] in gen2_ids]
 
 
 # -- what a batch writes -------------------------------------------------------------------
@@ -195,7 +211,7 @@ _STAGING = {
     "mig_track_progress": ("household_key text, status text, farmer_ids bigint[], fingerprint jsonb, "
                            "fingerprint_version integer, seen_fingerprint jsonb, adopted boolean, error_class text, "
                            "error text, resolves text"),
-    "mig_track_record": "kind text, odoo_id bigint, household_key text",
+    "mig_track_record": "kind text, odoo_id bigint, gen2_id text, household_key text",
     "mig_track_issue": ("household_key text, severity text, entity text, odoo_id text, field text, value text, "
                         "reason text"),
 }
@@ -222,9 +238,10 @@ class Batch:
         for i in issues:
             self._issue(unit, i["severity"], i["entity"], i["odoo_id"], i["field"], i["value"], i["reason"])
 
-    def loaded(self, unit, fingerprint, issues, adopted=False):
+    def loaded(self, unit, fingerprint, issues, records, adopted=False):
+        """records: links()."""
         self._progress(unit, LOADED, fingerprint=fingerprint, seen=fingerprint, adopted=adopted, resolves="all")
-        self.rows["mig_track_record"] += [(kind, odoo_id, unit.key) for kind, odoo_id in sorted(records_of(unit))]
+        self.rows["mig_track_record"] += [(kind, odoo_id, gen2_id, unit.key) for kind, odoo_id, gen2_id in records]
         self.issues(unit, issues)
 
     def unchanged_again(self, unit, fingerprint):
@@ -266,8 +283,8 @@ ON CONFLICT (household_key) DO UPDATE SET
        first_run_id = CASE WHEN p.status = 'FAILED' AND excluded.status = 'LOADED' THEN excluded.first_run_id
                            ELSE p.first_run_id END,
        last_run_id = excluded.last_run_id, updated_at = clock_timestamp()""",
-            """INSERT INTO migration.migrated_record (kind, odoo_id, household_key)
-SELECT kind, odoo_id, household_key FROM mig_track_record
+            """INSERT INTO migration.migrated_record (kind, odoo_id, gen2_id, household_key)
+SELECT kind, odoo_id, gen2_id, household_key FROM mig_track_record
 ON CONFLICT (kind, odoo_id) DO NOTHING""",
             """UPDATE migration.issue i SET status = 'RESOLVED', resolved_at = clock_timestamp()
   FROM mig_track_progress t

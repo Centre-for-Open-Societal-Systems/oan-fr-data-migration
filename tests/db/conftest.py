@@ -170,8 +170,16 @@ class World:
 
     def contents(self):
         """Every migrated row, but for what a run makes up anew (TEMP- ids)."""
-        return {t: self.rows(f"SELECT (to_jsonb(x) - 'functional_record_id')::text FROM g2p_register_{t} x ORDER BY 1")
-                for t in TABLES}
+        out = {t: self.rows(f"SELECT (to_jsonb(x) - 'functional_record_id')::text FROM g2p_register_{t} x ORDER BY 1")
+               for t in TABLES}
+        out["migrated_record"] = self.rows("SELECT * FROM migration.migrated_record ORDER BY kind, odoo_id")
+        return out
+
+    def unlinked(self):
+        """Registry records without their migrated_record row, and the other way round."""
+        every = " UNION ALL ".join(f"SELECT internal_record_id AS id FROM g2p_register_{t}" for t in TABLES)
+        return (self.rows(f"SELECT id FROM ({every}) r WHERE id NOT IN (SELECT gen2_id FROM migration.migrated_record)"),
+                self.rows(f"SELECT kind, odoo_id FROM migration.migrated_record WHERE gen2_id NOT IN ({every})"))
 
     def progress(self):
         return dict(self.rows("SELECT household_key, status FROM migration.household_progress"))

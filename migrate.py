@@ -133,7 +133,7 @@ def _worker_init(parent):
 
 def _unit_outcome(unit, plan, data, error) -> dict:
     """What became of one unit: "do" is load, same, reverted, changed, incomparable or failed."""
-    from farmer_profile import load, source
+    from farmer_profile import load, source, tracking
     out = {"unit": unit, "issues": [], "fingerprint": None}
 
     def failed(exc, trace=""):
@@ -163,7 +163,9 @@ def _unit_outcome(unit, plan, data, error) -> dict:
         raise
     except Exception as exc:
         return failed(exc, traceback.format_exc())
-    return {**out, "do": "load", "prepared": prepared, "issues": [dataclasses.asdict(i) for i in result.issues]}
+    gen2_ids = {i for table, _ in prepared.items() for i in prepared.ids(table)}
+    return {**out, "do": "load", "prepared": prepared, "records": tracking.links(unit, data, gen2_ids),
+            "issues": [dataclasses.asdict(i) for i in result.issues]}
 
 
 def _prepare_batch(job) -> dict:
@@ -338,7 +340,7 @@ class Loader:
             return {t: {"rows": len(rows), "added": len(rows), "already there": 0} for t, (_, rows) in prepared.items()}
         batch = tracking.Batch()
         for o in outcomes:
-            batch.loaded(o["unit"], o["fingerprint"], o["issues"])
+            batch.loaded(o["unit"], o["fingerprint"], o["issues"], o["records"])
 
         def before(cur):
             tracking.fence(cur, self.run_id)
@@ -364,7 +366,7 @@ class Loader:
             elif o["do"] == "reverted":
                 batch.unchanged_again(o["unit"], o["fingerprint"])
             elif o["do"] == "adopt":
-                batch.loaded(o["unit"], o["fingerprint"], o["issues"], adopted=True)
+                batch.loaded(o["unit"], o["fingerprint"], o["issues"], o["records"], adopted=True)
         if self.tracked:
             _retrying("the progress could not be written", self.log,
                       lambda: tracking.record(self.engine, self.run_id, batch))
@@ -549,7 +551,7 @@ class Run:
             counts = {t: {"rows": len(rows), "added": len(rows), "already there": 0} for t, (_, rows) in prepared.items()}
             rest = loader.record([o for o in outcomes if o["do"] != "load"])
             for o in loaded:
-                rest.loaded(o["unit"], o["fingerprint"], o["issues"])
+                rest.loaded(o["unit"], o["fingerprint"], o["issues"], o["records"])
             self.sql_file.add(prepared, rest)
         else:
             counts, loaded = loader.load(to_load)
@@ -574,6 +576,7 @@ class Run:
                                ", ".join(map(str, o["unit"].farmers[:20])), o["error_class"], o["error"],
                                "\n" + o["trace"] if o["trace"] else "")
             o.pop("prepared", None)
+            o.pop("records", None)
         done = collections.Counter(o["do"] for o in outcomes)
         added = ", ".join(f"{t.replace('g2p_register_', '')} {c['added']}" for t, c in counts.items()) or "nothing"
         result = ", ".join(f"{n} {_WORDS[k]}" for k, n in done.items())

@@ -35,6 +35,7 @@ def test_a_killed_run_goes_on_where_it_stopped(world, reference, fault):
         sum(1 for k in before if k.startswith("solo-")) + world.one(
             "SELECT count(*) FROM migration.migrated_record WHERE kind = 'household'")  # progress and data agree
     prepared = world.tmp / "prepared"
+    assert world.unlinked() == ([], [])
     code, out = world.migrate(*SMALL, COUNT_PREPARED=str(prepared))
     assert code == 0, out[-3000:]
     assert world.contents() == contents
@@ -304,6 +305,7 @@ def test_the_sql_file(world):
     def psql():
         return world.apply(path)
     assert psql() is None
+    assert world.unlinked() == ([], [])
     assert world.counts()["farmers"] == 59 and world.progress()["solo-10"] == "FAILED"
     before = world.contents()
     assert "already been applied" in psql() and world.contents() == before
