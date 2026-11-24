@@ -46,6 +46,14 @@ class Result:
     crops: list = field(default_factory=list)
     issues: list = field(default_factory=list)
 
+    @classmethod
+    def joined(cls, results):
+        out = cls()
+        for r in results:
+            for name in ("households", "farmers", "members", "phones", "lands", "crops", "issues"):
+                getattr(out, name).extend(getattr(r, name))
+        return out
+
     def tables(self):
         # parents before children
         return [("Household", self.households), ("Farmer", self.farmers), ("HouseholdMember", self.members),
@@ -124,8 +132,15 @@ class Transformer:
         for m in data["memberships"]:
             members_of.setdefault(m["household_id"], []).append(m)
         household_of = {}
-        for gid, memberships in members_of.items():
-            household_of.update({m["farmer_id"]: record_id("household", gid) for m in memberships})
+        in_households = {}
+        for gid in sorted(members_of):
+            for m in members_of[gid]:
+                household_of.setdefault(m["farmer_id"], record_id("household", gid))
+                in_households.setdefault(m["farmer_id"], []).append(gid)
+        for fid, gids in in_households.items():
+            if fid in farmers and len(set(gids)) > 1:
+                self.issue("check", "farmer", fid, "household", ", ".join(map(str, gids)),
+                           "in several households in farmer profile: linked to the lowest household id")
         for fid, farmer in farmers.items():
             if fid not in household_of:
                 household_of[fid] = record_id("household", f"solo-{fid}")
@@ -133,6 +148,9 @@ class Transformer:
                                               "kinds": "Head"}]
                 self.issue("check", "farmer", fid, "household", None,
                            "in no household in farmer profile: given a household of their own, as its head")
+                if C.yes_no(farmer["hh_is_household_head"]) is False:
+                    self.issue("check", "farmer", fid, "hh_is_household_head", farmer["hh_is_household_head"],
+                               "marked as not the household head, but in no household: is the head of the one given")
 
         for gid, memberships in members_of.items():
             self.household(gid, groups.get(gid), memberships, farmers, ids)

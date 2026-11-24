@@ -1,9 +1,21 @@
 """Reads farmer profile records from the Odoo database (read-only).
 
-select_farmers picks the farmers to migrate; read() returns everything about
-them as plain dicts keyed by Odoo id, including every member of their
-households, so a household is always migrated whole.
+select_farmers picks the farmers to migrate; units() groups them into the
+smallest pieces that can be migrated on their own (a household with all its
+members, or a farmer in none); read() returns everything about some farmers as
+plain dicts keyed by Odoo id; read_units() does so per unit.
 """
+import collections
+import hashlib
+import json
+
+import psycopg2
+
+# Raised when the fingerprint's contents change, so that older ones are not compared
+FINGERPRINT_VERSION = 1
+
+# key: "household-<lowest group id>" or "solo-<partner id>"
+Unit = collections.namedtuple("Unit", "key farmers households")
 
 FARMERS = """
 SELECT p.id, p.given_name, p.family_name, p.gf_name_eng, p.first_name_amh, p.family_name_amh, p.gf_name_amh,
@@ -107,3 +119,169 @@ def read(conn, farmer_ids: list[int]) -> dict:
              WHERE c.partner_id = ANY(%s) ORDER BY c.partner_id, c.id""", (everyone,))
     return {"farmers": farmers, "households": households, "memberships": memberships, "ids": ids,
             "incomes": incomes, "phones": phones, "lands": lands, "crops": crops}
+
+
+# -- units --------------------------------------------------------------------------------
+
+def database_uuid(conn) -> str | None:
+    """Odoo's own id of this database, None when it has none."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('ir_config_parameter')")
+        if cur.fetchone()[0] is None:
+            return None
+        cur.execute("SELECT value FROM ir_config_parameter WHERE key = 'database.uuid'")
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def units(conn, farmer_ids: list[int]) -> tuple[list[Unit], list[int]]:
+    """The units these farmers belong to, each whole, and the ids that are no
+    active person. Households that share a member are one unit: the member's
+    records depend on both."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM res_partner WHERE id = ANY(%s) AND active AND NOT is_group", (farmer_ids,))
+        people = {r[0] for r in cur.fetchall()}
+        cur.execute("""
+            SELECT m."group", m.individual FROM g2p_group_membership m JOIN res_partner p ON p.id = m.individual
+             WHERE NOT coalesce(m.is_ended, false) AND p.active AND NOT p.is_group AND m."group" IS NOT NULL
+             ORDER BY 1, 2""")
+        parent, members, groups_of = {}, collections.defaultdict(list), collections.defaultdict(list)
+
+        def root(g):
+            while parent[g] != g:
+                parent[g] = parent[parent[g]]
+                g = parent[g]
+            return g
+
+        for group, person in cur.fetchall():
+            parent.setdefault(group, group)
+            members[group].append(person)
+            groups_of[person].append(group)
+    for groups in groups_of.values():
+        for other in groups[1:]:
+            a, b = root(groups[0]), root(other)
+            parent[max(a, b)] = min(a, b)  # the root is the lowest group id
+    together = collections.defaultdict(list)
+    for group in parent:
+        together[root(group)].append(group)
+
+    out, done, solo = [], set(), []
+    for fid in farmer_ids:
+        if fid not in people:
+            continue
+        if fid not in groups_of:
+            solo.append(fid)
+            continue
+        top = root(groups_of[fid][0])
+        if top not in done:
+            done.add(top)
+            households = tuple(sorted(together[top]))
+            out.append(Unit(f"household-{top}", tuple(sorted({p for g in households for p in members[g]})), households))
+    out.sort(key=lambda u: u.households[0])
+    out += [Unit(f"solo-{fid}", (fid,), ()) for fid in dict.fromkeys(solo)]
+    return out, [f for f in farmer_ids if f not in people]
+
+
+def batches(all_units: list[Unit], size: int) -> list[list[Unit]]:
+    """Whole units, about `size` farmers per batch (a larger unit is a batch of its own)."""
+    out, current, n = [], [], 0
+    for unit in all_units:
+        if current and n + len(unit.farmers) > size:
+            out.append(current)
+            current, n = [], 0
+        current.append(unit)
+        n += len(unit.farmers)
+    return out + [current] if current else out
+
+
+class SourceChanged(Exception):
+    """Farmer profile's households changed between planning the run and reading them."""
+
+
+def split(data: dict, some_units: list[Unit]) -> dict:
+    """read()'s result per unit: key -> the same dict, holding that unit's rows only."""
+    out = {u.key: {part: [] for part in data} for u in some_units}
+    of_farmer = {f: u.key for u in some_units for f in u.farmers}
+    of_household = {h: u.key for u in some_units for h in u.households}
+    for row in data["farmers"]:
+        if row["id"] in of_farmer:
+            out[of_farmer[row["id"]]]["farmers"].append(row)
+    for part, owner in (("households", "id"), ("memberships", "household_id")):
+        for row in data[part]:
+            if row[owner] in of_household:
+                out[of_household[row[owner]]][part].append(row)
+    for part in ("ids", "incomes", "phones", "lands", "crops"):
+        for row in data[part]:
+            if row["partner_id"] in of_farmer:
+                out[of_farmer[row["partner_id"]]][part].append(row)
+    return out
+
+
+def merge(parts: list[dict]) -> dict:
+    """The opposite of split."""
+    keys = ("farmers", "households", "memberships", "ids", "incomes", "phones", "lands", "crops")
+    return {k: [row for p in parts for row in p[k]] for k in keys}
+
+
+def _check_unit(unit: Unit, data: dict, everything: dict):
+    """The unit as read must be the unit as planned."""
+    mine = {f["id"] for f in data["farmers"]}
+    households = {m["household_id"] for m in everything["memberships"] if m["farmer_id"] in mine}
+    if mine != set(unit.farmers) or households != set(unit.households):
+        raise SourceChanged("farmer profile changed while the migration was running: rerun to migrate it")
+
+
+def read_units(conn, some_units: list[Unit]) -> list[tuple]:
+    """(unit, its data, None) or (unit, None, the error) for each unit. One value the
+    driver cannot read (e.g. a date in the year 20023) fails its unit only. A
+    lost connection or a missing table is raised: it is nobody's record."""
+    def one(group):
+        data = read(conn, sorted({f for u in group for f in u.farmers}))
+        per_unit, out = split(data, group), []
+        for u in group:
+            try:
+                _check_unit(u, per_unit[u.key], data)
+                out.append((u, per_unit[u.key], None))
+            except SourceChanged as exc:
+                out.append((u, None, exc))
+        return out
+
+    try:
+        return one(some_units)
+    except (psycopg2.DataError, ValueError, OverflowError) as exc:
+        conn.rollback()
+        if len(some_units) == 1:
+            return [(some_units[0], None, exc)]
+        middle = len(some_units) // 2
+        return read_units(conn, some_units[:middle]) + read_units(conn, some_units[middle:])
+
+
+# -- fingerprints: has a unit changed since it was migrated? ------------------------------
+# Only what the migration uses counts. Left out: Odoo's own dates, the age Odoo
+# recomputes from the birth date, and a location's name when it has a code
+# (renaming a region is not a change to every farmer in it).
+_NOT_COUNTED = {"create_date", "write_date", "start_date", "status", "is_ended", "is_duplicated"}
+
+
+def fingerprint(data: dict) -> dict:
+    """part -> a hash of its rows, e.g. {"farmers": "9f..", "phones": "07.."}."""
+    out = {}
+    for part, rows in data.items():
+        lines = []
+        for row in rows:
+            kept = {k: v for k, v in row.items() if k not in _NOT_COUNTED}
+            if part == "households":
+                kept.pop("name", None)
+            if part == "farmers":
+                if kept.get("birthdate"):
+                    kept.pop("age_int", None)
+                for level in ("region", "zone", "woreda", "kebele"):
+                    if kept.get(f"{level}_code"):
+                        kept.pop(f"{level}_name", None)
+            lines.append(json.dumps(kept, sort_keys=True, ensure_ascii=True, default=str))
+        out[part] = hashlib.sha256("\n".join(sorted(lines)).encode()).hexdigest()[:16]
+    return out
+
+
+def changed_parts(before: dict, now: dict) -> list[str]:
+    return sorted(k for k in {*before, *now} if before.get(k) != now.get(k))

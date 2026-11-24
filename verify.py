@@ -41,10 +41,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     init_registry()
-    from farmer_profile import report, runlog, source, summary as text_summary, verification as V
+    from farmer_profile import report, runlog, source, summary as text_summary, tracking, verification as V
     from farmer_profile.codes import PackCodes
     from farmer_profile.geo import Geo
-    from farmer_profile.transform import MIGRATED_BY, Transformer
+    from farmer_profile.transform import MIGRATED_BY, Result, Transformer
 
     run_dir, log = runlog.start(args.report, "verify", argv)
     started = time.monotonic()
@@ -61,28 +61,51 @@ def main(argv=None):
     kept, n_diff = [], 0
     try:
         chosen = source.select_farmers(conn, args.limit, args.ids, args.complete)
-        log.info("%d farmers to verify, %d per batch", len(chosen), args.batch_size)
+        planned, _ = source.units(conn, chosen)
+        conn.rollback()
+        log.info("%d farmers to verify, in %d households, %d farmers per batch", len(chosen), len(planned), args.batch_size)
         master = master_data(args, engine, log)
         transformer = Transformer(PackCodes(args.pack), Geo(args.pack, master.nodes), master)
         expected_ids = collections.defaultdict(set)
         skipped = collections.Counter()
-        n_batches = (len(chosen) + args.batch_size - 1) // args.batch_size
-        for b, start in enumerate(range(0, len(chosen), args.batch_size), start=1):
-            ids = chosen[start:start + args.batch_size]
-            data = source.read(conn, ids)
+        tracked = tracking.exists(engine)
+        left_out, unreadable, twice = collections.defaultdict(list), [], []
+        groups = source.batches(planned, args.batch_size)
+        n_batches = len(groups)
+        for b, group in enumerate(groups, start=1):
+            state = tracking.State(engine, group) if tracked else tracking.NoState()
+            parts, results = [], []
+            for unit, data, error in source.read_units(conn, group):
+                status = state.progress.get(unit.key, ("",))[0] if tracked else ""
+                plan = state.plan(unit)
+                if status in ("FAILED", "CHANGED") or plan["do"] == "recomposed":
+                    left_out[status or "CHANGED"].append(unit.key)
+                    continue
+                if error is not None:
+                    unreadable.append(unit.key)
+                    continue
+                if plan["do"] == "compare" and plan["version"] == source.FINGERPRINT_VERSION \
+                        and source.changed_parts(plan["fingerprint"], source.fingerprint(data)):
+                    left_out["CHANGED"].append(unit.key)  # changed since the last run
+                    continue
+                parts.append(data)
+                results.append(transformer(data))
+                if unit.households:
+                    twice += [(unit.key, V.record_id("member", f"solo-{f}")) for f in unit.farmers]
             conn.rollback()
-            result = transformer(data)
             odoo_of = {}
-            for register, rows in result.tables():
-                for r in rows:
-                    expected_ids[register].add(r["internal_record_id"])
+            data = source.merge(parts)
             for kind, rows in (("farmer", data["farmers"]), ("land", data["lands"]), ("crop", data["crops"])):
                 odoo_of.update({V.record_id(kind, r["id"]): r["id"] for r in rows})
-            for i in result.issues:
-                if i.severity == "skipped":
-                    skipped[i.entity] += 1
             with Session(engine) as session, session.begin():
-                comparison.run(session, models, result, odoo_of)
+                for result in results:
+                    for register, rows in result.tables():
+                        for r in rows:
+                            expected_ids[register].add(r["internal_record_id"])
+                    for i in result.issues:
+                        if i.severity == "skipped":
+                            skipped[i.entity] += 1
+                comparison.run(session, models, Result.joined(results), odoo_of)
                 direct.run(session.connection(), data)
                 session.rollback()
             for d in comparison.differences:
@@ -91,8 +114,15 @@ def main(argv=None):
                 if len(kept) < report.MAX_DETAIL_ROWS:
                     kept.append(d)
             comparison.differences = []
-            log.info("batch %d/%d: %d farmers checked, %d differences so far", b, n_batches, len(ids), n_diff)
+            log.info("batch %d/%d: %d households checked, %d differences so far", b, n_batches, len(group), n_diff)
 
+        if tracked:
+            V.progress_checks(engine, models, checks, left_out)
+        checks.add("Records", "every household could be read from farmer profile", 0, len(unreadable),
+                   detail=", ".join(unreadable[:20]))
+        both = V.existing_members(engine, models, twice)
+        checks.add("Registry", "nobody is in a household of their own and in farmer profile's household too", 0, len(both),
+                   detail=", ".join(both[:20]))
         for register in comparison.expected:
             n = comparison.expected[register]
             checks.add("Records", f"{register}: every record migrated", n, n - comparison.missing[register],
@@ -114,8 +144,12 @@ def main(argv=None):
                     cls = getattr(models, f"G2PRegister{register}")
                     n = tconn.execute(text(f"SELECT count(*) FROM {cls.__tablename__} WHERE created_by = :by"),
                                       {"by": MIGRATED_BY}).scalar()
+                    # the records of changed households are not among the expected ones
                     checks.add("Records", f"{register}: no migrated records beyond farmer profile's", len(cls_ids), n,
-                               detail="the registry has migrated records farmer profile no longer has" if n > len(cls_ids) else "")
+                               warn_only=bool(left_out["CHANGED"]),
+                               detail=("the registry has migrated records farmer profile no longer has"
+                                       + (f", or of the {len(left_out['CHANGED'])} changed households"
+                                          if left_out["CHANGED"] else "")) if n > len(cls_ids) else "")
                 log.info("%d farmers in scope in farmer profile", n_src)
             V.registry_checks(tconn, models, master, checks)
     finally:

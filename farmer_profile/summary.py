@@ -28,21 +28,66 @@ def _has(n):
     return (n or 0) > 0
 
 
-def migration(info: dict, totals: dict, source_fields: list, target_cols: list, after_load: dict,
-              issue_counts: collections.Counter, failed: list, dry_run: bool, files: list) -> list[str]:
+def mapping_exceptions(source_fields: list) -> list:
+    """Farmer profile fields holding data that does not reach Gen2, or that nobody has mapped."""
+    lost = [f for f in source_fields if f["status"] in (F.NOT_YET, F.NO_COLUMN, F.UNREVIEWED) and _has(f["rows_with_value"])]
+    order = {s: i for i, s in enumerate((F.UNREVIEWED, F.NOT_YET, F.NO_COLUMN))}
+    return sorted(lost, key=lambda f: (order[f["status"]], -(f["rows_with_value"] or 0)))
+
+
+def _overall(totals: dict) -> list[str]:
+    out = [f"{'Households, over all runs':34}{'households':>12}{'farmers':>10}"]
+    for status, label in (("LOADED", "in the registry"), ("FAILED", "failed, not in the registry"),
+                          ("CHANGED", "in; changed in farmer profile")):
+        n, farmers = totals["households"].get(status, (0, 0))
+        out.append(f"  {label:32}{n:>12}{farmers:>10}")
+    issues = ", ".join(f"{s} {totals['open'][s]}" for s in ("failed", "changed", "skipped", "dropped", "check")
+                       if totals["open"].get(s)) or "none"
+    out.append(f"  Open issues: {issues}; resolved: {totals['resolved']}")
+    return out
+
+
+def status(totals: dict, runs: list) -> list[str]:
+    """migrate.py --status"""
+    out = _overall(totals) + ["", "Latest runs"]
+    for r in runs:
+        counts = r["counts"] or {}
+        did = ", ".join(f"{k} {v}" for k, v in counts.items() if isinstance(v, int) and v)
+        out.append(f"  {r['run_id']:28}{r['mode']:10}{r['status']:24}{did}")
+        if r["error"]:
+            out.append(f"      {r['error'][:200]}")
+    if any(r["status"] == "RUNNING" for r in runs):
+        out.append("  (RUNNING: still going, or killed; the next run tells, and takes over from a killed one)")
+    return out
+
+
+def migration(info: dict, data: dict, source_fields: list, target_cols: list, issue_counts: collections.Counter,
+              files: list, dry_run=False, sql_out=False, finalized=True, error=None) -> list[str]:
     out = []
     add = out.append
-    sql_out = str(info.get("Mode", "")).startswith("SQL file")
-    title = "MIGRATION SUMMARY" + ("  (DRY RUN: every batch rolled back, nothing kept)" if dry_run else
-                                   "  (SQL FILE: nothing written; run migration.sql to load)" if sql_out else "")
+    households, totals, failed = data["households"], data["counts"], data["failed"]
+    title = "MIGRATION SUMMARY: " + info["Status"] + (
+        "  (DRY RUN: every batch rolled back, nothing kept)" if dry_run else
+        "  (SQL FILE: nothing written; run migration.sql to load)" if sql_out else "")
     add("=" * 78)
     add(title)
     add("=" * 78)
     add(f"Run {info['Run']}, {info['Duration (s)']} s, arguments: {info['Arguments']}")
     add(f"Codes and locations checked against {info.get('Values checked against', '-')}")
-    add(f"Farmers: {info['Farmers chosen']} chosen, {info['Farmers read (with household members)']} read with "
-        f"their household members; {info['Batches']} batches, {len(failed)} failed")
+    if error:
+        add(f"STOPPED BEFORE THE END: {error}")
+        add("Run the same command again: what is in is skipped, the rest is migrated.")
     add("")
+
+    add(f"Households in this run: {households['planned']} planned")
+    for word, n in households.items():
+        if word not in ("planned", "records added", "remaining") and n:
+            add(f"  {word:32}{n:>12}")
+    add(f"  {'remaining':32}{households['remaining']:>12}")
+    add("")
+    if data["overall"]:
+        out.extend(_overall(data["overall"]))
+        add("")
 
     add(f"{'Records':34}{'read':>10}{'added':>10}{'already there':>15}")
     for table, c in totals.items():
@@ -51,49 +96,62 @@ def migration(info: dict, totals: dict, source_fields: list, target_cols: list, 
         add("  ('added' is what loading would add)")
     add("")
 
-    add(f"{f'Farmer profile fields ({len(source_fields)})':44}{'fields':>8}{'holding data':>16}")
-    count, data = collections.Counter(), collections.Counter()
-    for f in source_fields:
-        count[f["status"]] += 1
-        data[f["status"]] += _has(f["rows_with_value"])
-    for status in F.SOURCE_STATUSES:
-        add(f"  {_SOURCE_LABELS[status]:42}{count[status]:>8}{data[status]:>16}")
-    add("")
-
-    add(f"{f'Gen2 columns ({len(target_cols)})':44}{'columns':>8}{'filled':>16}")
-    count, data = collections.Counter(), collections.Counter()
-    for c in target_cols:
-        count[c["status"]] += 1
-        data[c["status"]] += _has(c["rows_with_value"])
-    for status in F.TARGET_STATUSES:
-        add(f"  {_TARGET_LABELS[status]:42}{count[status]:>8}{data[status]:>16}")
-    if dry_run or sql_out:
-        add("  (counted in the finished rows of this run)")
-    add("")
+    if failed:
+        add(f"Failed households ({len(failed)}): left out, nothing of them is in the registry")
+        for h in failed[:MAX_LISTED]:
+            farmers = ", ".join(map(str, h["farmer_ids"] or []))
+            add(f"  {h['household_key']} (farmers {farmers[:60]}): {h['error_class']}: {(h['error'] or '').splitlines()[0][:160]}")
+        if len(failed) > MAX_LISTED:
+            add(f"  ... {len(failed) - MAX_LISTED} more in migration-report.xlsx")
+        add("  Fix them in farmer profile and run the same command again.")
+        add("")
+    if data["changed"]:
+        add(f"Changed in farmer profile since they were migrated ({len(data['changed'])}): not touched; correct them in "
+            "the registry")
+        for h in data["changed"][:MAX_LISTED]:
+            add(f"  {h['household_key']}: {h['what']}")
+        if len(data["changed"]) > MAX_LISTED:
+            add(f"  ... {len(data['changed']) - MAX_LISTED} more in migration-report.xlsx")
+        add("")
 
     add("Generated after the load")
-    if sql_out:
-        add("  in migration.sql, after the inserts" if not failed else "  not in migration.sql: a batch failed")
+    if error:
+        add("  not queued: the run stopped before its end (the run that finishes queues them)")
+    elif sql_out:
+        add("  in migration.sql, after the inserts" if finalized else "  not in migration.sql: --no-finalize")
     elif dry_run:
         add("  not queued: dry run")
-    elif failed:
-        add("  not queued: a batch failed (rerun the same command)")
-    elif not after_load:
+    elif not finalized:
         add("  not queued: --no-finalize")
+    elif not data["after_load"]:
+        add("  nothing to queue: the registry asks for no ids or scores")
     else:
-        for key, n in after_load.items():
+        for key, n in data["after_load"].items():
             add(f"  {key}: {n}")
     add("  Record history: not written (a migrated record's history starts empty)")
     add("")
 
-    lost = [f for f in source_fields if f["status"] in (F.NOT_YET, F.NO_COLUMN, F.UNREVIEWED)
-            and _has(f["rows_with_value"])]
+    for label, entries, statuses, labels, extra in (
+            ("Farmer profile fields", source_fields, F.SOURCE_STATUSES, _SOURCE_LABELS, "holding data"),
+            ("Gen2 columns", target_cols, F.TARGET_STATUSES, _TARGET_LABELS, "filled")):
+        add(f"{f'{label} ({len(entries)})':44}{'':>8}{extra:>16}")
+        count, filled = collections.Counter(), collections.Counter()
+        for e in entries:
+            count[e["status"]] += 1
+            filled[e["status"]] += _has(e["rows_with_value"])
+        for s in statuses:
+            add(f"  {labels[s]:42}{count[s]:>8}{filled[s]:>16}")
+    if dry_run or sql_out:
+        add("  (counted in the finished rows of this run)")
+    add("")
+
+    lost = mapping_exceptions(source_fields)
     add(f"Farmer profile data not in Gen2 after this run ({len(lost)} fields holding data)")
-    for status in (F.UNREVIEWED, F.NOT_YET, F.NO_COLUMN):
-        mine = sorted((f for f in lost if f["status"] == status), key=lambda f: -(f["rows_with_value"] or 0))
+    for s in (F.UNREVIEWED, F.NOT_YET, F.NO_COLUMN):
+        mine = [f for f in lost if f["status"] == s]
         if not mine:
             continue
-        add(f"  {_SOURCE_LABELS[status]}:")
+        add(f"  {_SOURCE_LABELS[s]}:")
         for f in mine[:MAX_LISTED]:
             add(f"    {f['model'] + '.' + f['field']:52}{f['rows_with_value']:>8} of {f['rows_in_scope']}")
         if len(mine) > MAX_LISTED:
@@ -103,20 +161,17 @@ def migration(info: dict, totals: dict, source_fields: list, target_cols: list, 
     by_severity = collections.Counter()
     for (severity, *_), n in issue_counts.items():
         by_severity[severity] += n
-    add(f"Issues: {sum(by_severity.values())} (skipped {by_severity['skipped']}: record not migrated; "
-        f"dropped {by_severity['dropped']}: value left out; check {by_severity['check']}: migrated, worth a look)")
+    add(f"{'Open issues, over all runs' if data['overall'] else 'Issues'}: {sum(by_severity.values())} "
+        f"(failed {by_severity['failed']}: household left out; changed {by_severity['changed']}: not touched; "
+        f"skipped {by_severity['skipped']}: record not migrated; dropped {by_severity['dropped']}: value left out; "
+        f"check {by_severity['check']}: migrated, worth a look)")
     for (severity, entity, field, reason), n in issue_counts.most_common(MAX_LISTED):
-        add(f"  {n:>7}  {severity:8} {entity}.{field}: {reason}")
+        add(f"  {n:>7}  {severity:8} {entity}.{field}: {reason.splitlines()[0][:160] if reason else ''}")
     if len(issue_counts) > MAX_LISTED:
         add(f"  ... {len(issue_counts) - MAX_LISTED} more kinds in migration-report.xlsx")
     add("")
 
-    for b, ids, exc in failed:
-        add(f"FAILED batch {b} (Odoo ids {ids[0]}..{ids[-1]}): {exc}")
-    if failed:
-        add("Rerun the same command: finished batches are skipped, failed ones retried.")
-        add("")
-    if sql_out and not failed:
+    if sql_out and not error:
         add("Load it:  psql -v ON_ERROR_STOP=1 -f " + info["Run"] + "/migration.sql <registry database>")
         add("          (locally: ./run.sh apply)")
         add("Then run verify.py.")

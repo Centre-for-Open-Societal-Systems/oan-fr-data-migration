@@ -8,6 +8,7 @@
 #   ./run.sh apply [FILE] run migration.sql (default: the latest one) on the registry database
 #   ./run.sh verify       check the registry against farmer profile and Master Data
 #   ./run.sh fresh        reset + migrate + verify, in one go
+#   ./run.sh status       how far the migration is, and what is open
 #   ./run.sh summary      show the latest summaries
 #   ./run.sh report       open the latest Excel report
 #   ./run.sh reset        empty the local registry database
@@ -37,7 +38,7 @@ use_local_master_data() {
 # --all unless farmers are picked
 selection() {
   for a in "$@"; do
-    case "$a" in --all|--limit|--limit=*|--ids|--finalize-only) return 0;; esac
+    case "$a" in --all|--limit|--limit=*|--ids|--finalize-only|--status) return 0;; esac
   done
   return 1
 }
@@ -72,6 +73,7 @@ case "$step" in
       docker exec -i fr-migration-target psql -X -U postgres -d registry -v ON_ERROR_STOP=1 -f - < "$file"
     fi
     ;;
+  status) "$HERE/dev/py.sh" migrate --status ;;
   verify)
     use_local_master_data
     "$HERE/dev/py.sh" verify "$@"
@@ -96,6 +98,6 @@ case "$step" in
     ;;
   reset) "$HERE/dev/target-db.sh" reset 2>&1 | grep -v NOTICE ;;
   test) "$HERE/dev/test.sh" "$@" ;;
-  help|-h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//' ;;
+  help|-h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' ;;
   *) echo "unknown step: $step (./run.sh help)" >&2; exit 2 ;;
 esac
