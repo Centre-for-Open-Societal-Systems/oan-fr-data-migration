@@ -6,7 +6,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from . import health as H
-from .health_guide import GUIDE, WORDS
+from .health_guide import AREA, CHECKS, GUIDE, WORDS
 
 _FILLS = {H.GREEN: "D9EAD3", H.AMBER: "FFF2CC", H.RED: "F4CCCC", H.NOT_CHECKED: "EEEEEE"}
 _ORDER = {H.RED: 0, H.NOT_CHECKED: 1, H.AMBER: 2, H.INFO: 3, H.GREEN: 4}
@@ -90,7 +90,7 @@ def _overview(ws, data, where):
     ws.append(["Last load", data["run_id"] or "-"])
     if data["history"]:
         ws.append(["Measured (database time)", _taken(data["history"][-1][0])])
-    ws.append(["verify", _verify_line(data)])
+    ws.append(["Comparison of values (verify)", _verify_line(data)])
     ws.append([])
     rows = []
     for area in H.AREAS:
@@ -141,16 +141,19 @@ def _reconciliation(ws, measures, where):
     groups = list(H.GROUPS.values())
     rows = []
     for kind in H.KINDS:
-        total = of[(kind, "Gen1 records")].count
+        total = of[(kind, "In Gen1")].count
         counts = [of[(kind, g)].count for g in groups]
         scope = of[(kind, "Loaded, of what should be")]
         rows.append([kind, H.worst([m for m in measures if m.area == H.RECONCILIATION and m.record_type == kind]), total,
                      *counts, "yes" if sum(counts) == total else "NO", scope.total, _percent(scope),
                      of[(kind, "Loaded, and no longer in Gen1")].count, of[(kind, H.MADE)].count])
-    header = ["Record", "Result", "In Gen1", *groups, "Adds up", "Should be loaded", "% of it loaded",
-              "Loaded, no longer in Gen1", "Made for lone farmers"]
-    numbers = _table(ws, header, rows, [14, 12, 10, 10, 14, 20, 20, 24, 12, 14, 10, 12, 12, 14, 14], 2)
-    column = {**{g: get_column_letter(4 + i) for i, g in enumerate(groups)}, "Gen1 records": "C",
+    header = ["Record", "Result", "In Gen1", *groups, "Adds up", "Should be loaded", "Loaded, of what should be",
+              "Loaded, and no longer in Gen1", H.MADE]
+    numbers = _table(ws, header, rows, [14, 12, 10, 10, 10, 12, 10, 12, 14, 14, 10, 12, 14, 16, 14], 2)
+    for number in numbers:
+        ws.cell(number, 13).number_format = '0.0"%"'
+
+    column = {**{g: get_column_letter(4 + i) for i, g in enumerate(groups)}, "In Gen1": "C",
               "Loaded, of what should be": get_column_letter(6 + len(groups)),
               "Loaded, and no longer in Gen1": get_column_letter(7 + len(groups)), H.MADE: get_column_letter(8 + len(groups))}
     for kind, number in zip(H.KINDS, numbers):
@@ -200,7 +203,7 @@ def _trend(ws, taken):
     ws.freeze_panes = "D2"
 
 
-def _guide(ws, measures):
+def _guide(ws):
     ws.append(["How to read this workbook"])
     ws["A1"].font = Font(bold=True, size=14)
     ws.append([])
@@ -211,15 +214,12 @@ def _guide(ws, measures):
     ws.append([])
     _table(ws, ["Word", "What it means here"], WORDS, [])
     ws.append([])
-    in_area = {}
-    for m in measures:
-        in_area.setdefault(m.metric, m.area)
-    order = [*H.AREAS, H.SPLITS]
-    rows = [[metric, meaning, todo, "By region, source and status" if in_area[metric] == H.SPLITS else in_area[metric]]
-            for metric, (meaning, todo) in GUIDE.items() if metric in in_area]
-    rows.sort(key=lambda r: order.index(H.SPLITS if r[3].startswith("By ") else r[3]))
-    _table(ws, ["Metric", "What it means", "What to do when it is not green", "Sheet"], rows, [60, 70, 70, 28])
-    _wrapped(ws, {1, 2, 3})
+    rows = [[metric, AREA[metric], *(lambda c: (c[0], "yes" if c[1] else ""))(CHECKS.get(metric, ("none", False))), meaning, todo]
+            for metric, (meaning, todo) in GUIDE.items()]
+    _table(ws, ["Metric", "Sheet", "Target", "Blocks sign-off", "What it means", "What to do when it is not green"], rows, [])
+    for column, width in zip("ABCDEF", (56, 28, 10, 14, 80, 70)):
+        ws.column_dimensions[column].width = width
+    _wrapped(ws, {1, 5, 6})
 
 
 def workbook(path, data):
@@ -233,7 +233,7 @@ def workbook(path, data):
     name = "By region, source and status"
     _metrics(wb.create_sheet(name), name, [m for m in measures if m.area == H.SPLITS], where)
     _trend(wb.create_sheet("Trend"), data["history"])
-    _guide(wb.create_sheet("Guide"), measures)
+    _guide(wb.create_sheet("Guide"))
     _overview(overview, data, where)
     wb.save(path)
 

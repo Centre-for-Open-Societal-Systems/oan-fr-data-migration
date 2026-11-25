@@ -25,22 +25,25 @@ _BROKEN = "Ask the migration team to find out why."
 # metric -> (what it means, what to do when it is not green)
 GUIDE = {
     # -- Reconciliation
-    "Gen1 records": ("How many of this kind of record Gen1 has, including archived ones.", ""),
+    "In Gen1": ("How many of this kind of record Gen1 has, including archived ones.", ""),
     "Loaded": ("These records are in Gen2.", ""),
-    "Failed: its household failed": (
+    "Failed": (
         "These records are not in Gen2. Something in their household could not be loaded, so nothing of that household was.",
         "See 'Households that failed to load' on the sheet Run health."),
-    "Not added: its household changed after it was migrated": (
+    "Not added": (
         "These records are not in Gen2. They were added to Gen1 after their household was loaded, or their household has changed "
         "since. The migration does not add to a household it has already loaded.",
         "Open migration-report.xlsx, sheet Changed in Gen1. Add the record in Gen2 if it is wanted."),
-    "Left out: skipped or dropped, with a recorded reason": (
-        "These records are not in Gen2, and the migration recorded why. For example, a phone number that cannot be read.",
-        "Open migration-report.xlsx, sheet Issues. Accept the reason, or correct the record in Gen1 before the production load."),
-    "Out of scope: not migrated, by rule (see below)": (
-        "The migration does not take these: archived farmers and what belongs to them, disabled phone numbers, ended memberships, "
-        "and households without an active farmer. Draft, rejected and disabled farmers are in scope and are migrated.", ""),
-    "Out of scope, by reason": ("The out-of-scope records again, with the rule that applies to them.", ""),
+    "Left out": (
+        "These records are not in Gen2, because of a rule or a problem the migration met, and it wrote down the reason itself. For "
+        "example, a phone number that cannot be read.",
+        "Open migration-report.xlsx, sheet Issues, to see the reason. Accept it, or correct the record in Gen1 before the "
+        "production load."),
+    "Out of scope": (
+        "The migration is not meant to take these records. The rules: the farmer is archived in Gen1; the record belongs to an "
+        "archived farmer; the phone number is disabled; the membership has ended; no active farmer is in the household. Draft, "
+        "rejected and disabled farmers are not out of scope: they are migrated.", ""),
+    "Out of scope, by reason": ("How many of the out-of-scope records each rule applies to. Listed below the table.", ""),
     "Not reached yet": (
         "No load has come to these records yet, because the last one stopped early or because they are new in Gen1.",
         "Run migrate again."),
@@ -52,7 +55,7 @@ GUIDE = {
         "Look at the other columns of the same row on the sheet Reconciliation. They show where the rest are."),
     "Loaded, and no longer in Gen1": ("These records are in Gen2, but were deleted from Gen1 after the load.",
                                       "Nothing, if it was right to delete them."),
-    "Made by the migration for a farmer in no household (not in Gen1)": (
+    "Made for lone farmers": (
         "In Gen2 every farmer needs a household. The migration makes one for a farmer who has none in Gen1.", ""),
     # -- Run health
     "Last run completed": ("Whether the last load ran to its end.", "Run migrate again. It goes on where it stopped."),
@@ -137,10 +140,10 @@ GUIDE = {
         "never asked for it.", ""),
     "Farmers sharing a Fayda ID with another migrated farmer": (
         "Two or more migrated farmers have the same Fayda ID. They may be the same person.",
-        "The data owner decides which farmer keeps the ID."),
+        "Decide which farmer keeps the ID."),
     "Farmers sharing a Fayda ID with a farmer already in Gen2": (
         "A migrated farmer has the same Fayda ID as a farmer who was registered in Gen2 directly. They may be the same person.",
-        "The data owner decides which farmer keeps the ID."),
+        "Decide which farmer keeps the ID."),
     "Farmers sharing an RID with another migrated farmer": (
         "Two or more migrated farmers have the same Fayda registration number (RID). They may be the same person.", ""),
     "Farmers sharing an ODK farmer ID with another migrated farmer": (
@@ -167,3 +170,64 @@ GUIDE = {
         "Of the farmers who should be in Gen2, how many are, for each region, import source and Gen1 status.",
         "If one group is far below the others, look for a cause they share, such as a region missing from Master Data."),
 }
+
+# The first metric of each area, in the order above
+_FIRST = {"In Gen1": "Reconciliation", "Last run completed": "Run health", "Values matching Gen1 (verify)": "Quality",
+          "Migrated records with both IDs saved": "IDs", "Farmers loaded": "By region, source and status"}
+AREA = {}
+for _metric in GUIDE:
+    _area = _FIRST.get(_metric) or _area
+    AREA[_metric] = _area
+
+# What each area is about
+ABOUT = {
+    "Reconciliation": "Is every Gen1 record accounted for? It counts where each one ended up.",
+    "Run health": "Did the loads finish, what failed, and has Gen2 given out numbers and calculated scores?",
+    "Quality": "Are the values in Gen2 right and complete, and are the records linked correctly?",
+    "IDs": "Can every record be traced back to Gen1, and did the IDs people use come across?",
+    "By region, source and status": "Is one group of farmers worse off than the others?",
+}
+
+# The metrics that have a target: (target, whether missing it blocks sign-off, how many checks it is: one for each kind of record it is
+# measured for). The others are numbers to know (INFO).
+_RULES = ("Farmers without their household", "Members without their household", "Phones without their farmer",
+          "Lands without their farmer", "Crops without their land", "Households without exactly one head",
+          "Farmers with phones, and not exactly one primary")
+CHECKS = {
+    "Not reached yet": ("0", False, 6), "Unexplained": ("0", True, 6), "Loaded, of what should be": ("100%", False, 6),
+    "Last run completed": ("Yes", True, 1), "Households that failed to load": ("0", True, 1),
+    "Households left out because a farmer's number is taken": ("0", False, 1),
+    "Households changed in Gen1 since they were migrated": ("Reviewed", False, 1),
+    "Farmer numbers not queued": ("0", False, 1), "Farmer numbers failed": ("0", False, 1),
+    "Household numbers not queued": ("0", False, 1), "Household numbers failed": ("0", False, 1),
+    "Completion scores failed": ("0", False, 1),
+    "Values matching Gen1 (verify)": ("100%", True, 1),
+    "Loaded codes and locations still in Master Data (verify)": ("100%", False, 1),
+    "Values lost without a reason": ("0", False, 4), **{rule: ("0", True, 1) for rule in _RULES},
+    "Farmers sharing a Fayda ID with another migrated farmer": ("0", False, 1),
+    "Farmers sharing a Fayda ID with a farmer already in Gen2": ("0", False, 1),
+    "Migrated records with both IDs saved": ("100%", True, 6), "Gen1 Farmer IDs that arrived unchanged": ("100%", True, 1),
+    "Fayda IDs (UID or FAN) that arrived": ("100%", False, 1), "RIDs that arrived": ("100%", False, 1),
+    "ODK farmer IDs that arrived": ("100%", False, 1), "Land IDs that arrived": ("100%", False, 1),
+}
+
+
+def markdown(area) -> str:
+    """The area's metrics, as the document has them."""
+    out = ["| Metric | Target | Blocks sign-off | What it means | What to do when it is not green |", "|---|---|---|---|---|"]
+    for metric, (meaning, todo) in GUIDE.items():
+        if AREA[metric] == area:
+            target, blocks, _ = CHECKS.get(metric, ("none", False, 0))
+            out.append(f"| {metric} | {target} | {'**yes**' if blocks else ''} | {meaning} | {todo} |")
+    return "\n".join(out) + "\n"
+
+
+def areas_markdown() -> str:
+    out = ["| Area | What it is about | Metrics | Checks |", "|---|---|---|---|"]
+    metrics = checks = 0
+    for area, about in ABOUT.items():
+        n = sum(1 for m in GUIDE if AREA[m] == area)
+        c = sum(CHECKS[m][2] for m in GUIDE if AREA[m] == area and m in CHECKS)
+        out.append(f"| {area} | {about} | {n} | {c or 'none'} |")
+        metrics, checks = metrics + n, checks + c
+    return "\n".join([*out, f"| **Total** | | **{metrics}** | **{checks}** |"]) + "\n"

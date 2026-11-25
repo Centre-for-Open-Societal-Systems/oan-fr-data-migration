@@ -9,8 +9,7 @@ in Gen2 is what they see in Gen1.
 
 ## How many, and why
 
-The sample is **drawn at random**, and its size is agreed with the data owner before the
-check. A larger sample finds rarer differences and takes more time: time the first few
+The sample is **drawn at random**, and its size is agreed before the check. A larger sample finds rarer differences and takes more time: time the first few
 farmers to plan it. One critical difference means: find the cause, fix it, and draw a new
 sample.
 
@@ -127,12 +126,11 @@ yet: make it from the columns below, before the check.
 | Person, IDs, Household, Lands and crops, Phones, Status, Documents | For each: pass, fail, minor, or n/a (not applicable) |
 | What differs | The field, its value in Gen1, its value in Gen2 |
 | Recorded reason | What the Issues sheet says (see "Finding the recorded reason"), or "none" |
-| Reason accepted? | Yes or no, by the data owner |
+| Reason accepted? | Yes or no |
 | Result | Fail if any critical difference has no accepted reason; else pass |
 | Checked by, Date | |
 
-It holds personal data: keep it where only the checkers, the migration team and the sign-off
-authority can open it.
+It holds personal data: keep it where only the checkers and the migration team can open it.
 
 ### Example
 
@@ -150,11 +148,11 @@ Made up, and without the Gen2 ID and household key columns to fit the page.
 
 How to read it:
 
-- **Row 3** has a critical difference, with a recorded reason the data owner accepted: a pass.
+- **Row 3** has a critical difference, with a recorded reason that was accepted: a pass.
 - **Rows 4 and 5** have critical differences without a reason. They are in the random sample, so
   the check is not passed: find the cause, fix it, draw a new sample.
-- **Row 7** is a chosen case. It doesn't fail the random sample: the data owner decides how many
-  farmers are like it and what to do.
+- **Row 7** is a chosen case. It doesn't fail the random sample: find out how many farmers are like
+  it and decide what to do.
 
 ## Deciding
 
@@ -162,5 +160,5 @@ How to read it:
 |---|---|
 | No critical difference in the random sample | Passed |
 | A critical difference in the random sample | Not passed. Cause, fix, new sample with a new seed |
-| A critical difference in a chosen case only | How many farmers are like this? The data owner decides |
-| The same minor difference again and again | The data owner accepts it, or it is fixed |
+| A critical difference in a chosen case only | How many farmers are like this? Decide what to do about them |
+| The same minor difference again and again | It is accepted, or fixed |

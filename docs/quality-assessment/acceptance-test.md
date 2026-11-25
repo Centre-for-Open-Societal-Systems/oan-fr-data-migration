@@ -11,7 +11,7 @@ data is there and right. This says it can be used.
 After the production load, run only the others, unless the registry team agrees.
 
 **Passing:** every case passes. A case that fails for a reason that isn't the migration's is
-recorded and passed to the registry team, and the sign-off authority decides.
+recorded and passed to the registry team, and is looked at in the sign-off decision.
 
 | # | Case | Expected | |
 |---|---|---|---|

@@ -37,7 +37,7 @@ def test_every_record_is_in_one_group(world):
     assert groups(world, "land") == {"loaded": 12, "failed": 2, "not_added": 1, "out_of_scope": 2, "not_reached": 2}
     assert groups(world, "crop") == {"loaded": 1, "left_out": 1}
     for kind in ("farmer", "household", "member", "phone", "land", "crop"):
-        assert sum(groups(world, kind).values()) == world.measured("Gen1 records", kind)[0]
+        assert sum(groups(world, kind).values()) == world.measured("In Gen1", kind)[0]
     assert world.measured("Households that failed to load", "household") == (1, None, "RED")
     from farmer_profile.health import MADE
     assert world.measured(MADE, "household")[0] == 4 and world.measured(MADE, "land")[0] == 0
@@ -279,7 +279,8 @@ def test_it_does_not_depend_on_who_created_or_approved(world):
 def test_the_overview_says_what_to_do_and_where(world):
     """Every problem on the Overview has its meaning and leads to the cell that holds its number."""
     from farmer_profile.health_guide import GUIDE
-    world.farmers(6)
+    world.farmers(7)
+    world.source("UPDATE res_partner SET active = false WHERE id = 7")
     world.source("UPDATE res_partner SET birthdate = '20023-01-01' WHERE id = 3")
     world.source("INSERT INTO g2p_phone_number (id, partner_id, phone_no) VALUES (900, 1, '12')")
     world.source("INSERT INTO g2p_reg_id (id, partner_id, id_type, value) VALUES (1, 1, 1, '1234 5678 9012'), (2, 2, 1, '1234 5678 9012')")
@@ -307,19 +308,34 @@ def test_the_overview_says_what_to_do_and_where(world):
     # every metric is explained
     metrics = {m for (m,) in world.rows("SELECT DISTINCT metric FROM migration_report.measure WHERE area <> 'Verify'")}
     assert not metrics - set(GUIDE)
-    guide = {r[0].value for r in wb["Guide"].iter_rows()}
-    assert metrics <= guide
+    # ... and every metric explained is measured: Guide, sheets and document have the same ones, by the same names
+    from farmer_profile.health_guide import AREA, CHECKS
+    assert metrics == set(GUIDE)
+    rows = {r[0].value: r for r in wb["Guide"].iter_rows()}
+    assert set(GUIDE) <= set(rows)
+    for metric in GUIDE:
+        sheet = wb[AREA[metric]]
+        assert metric in {c.value for row in sheet.iter_rows() for c in row}, (metric, AREA[metric])
+    # what has a target, what it is and whether it blocks: as measured
+    measured = {}
+    for metric, target, blocking, n in world.rows(
+            "SELECT metric, target, blocking, count(*) FROM migration_report.measure WHERE result <> 'INFO' AND snapshot_id = "
+            "(SELECT max(snapshot_id) FROM migration_report.snapshot) GROUP BY 1, 2, 3"):
+        measured[metric] = (target, blocking, n)
+    assert measured == CHECKS
     # what needs attention comes first
     results = [r[0].value for r in wb["Quality"].iter_rows(min_row=2)]
     assert results == sorted(results, key=["RED", "NOT CHECKED", "AMBER", "INFO", "GREEN"].index)
 
 
-def test_every_metric_is_in_the_document():
+def test_the_document_has_every_metric_as_the_guide_has_it():
     from pathlib import Path
 
-    from farmer_profile.health_guide import GUIDE
+    from farmer_profile import health_guide
     text = (Path(__file__).resolve().parents[2] / "docs" / "quality-assessment" / "reading-the-reports.md").read_text()
-    assert [m for m in GUIDE if m not in text] == []
+    for area in health_guide.ABOUT:
+        assert health_guide.markdown(area) in text, area
+    assert health_guide.areas_markdown() in text
 
 
 def test_the_overview_counts_checks(world):

@@ -8,4 +8,5 @@
   acceptance test.
 
 Generated reports, logs, local fixtures, and archives are intentionally
-excluded from Git history.
+excluded from Git history, except the invented examples in
+`quality-assessment/examples/`.

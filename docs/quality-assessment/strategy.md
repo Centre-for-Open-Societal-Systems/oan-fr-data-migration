@@ -1,7 +1,7 @@
 # Post-migration quality assessment strategy
 
 How we decide that the farmer data moved from Gen1 (farmer profile) to Gen2
-(Farmer Registry) is complete, correct and traceable, and who signs it off.
+(Farmer Registry) is complete, correct and traceable.
 
 ## 1. What we are assessing
 
@@ -35,13 +35,13 @@ their records in Gen2 (section 6).
 | Dimension | The question | Measured by | Target | Blocks sign-off |
 |---|---|---|---|---|
 | **Completeness: records** | Is every Gen1 record loaded, or accounted for? | Health: Reconciliation | 0 unexplained, 0 failed households | **Yes** |
-| | Is everything in scope loaded? | Health: Reconciliation | 100%, or each exception accepted | Accepted by the data owner |
+| | Is everything in scope loaded? | Health: Reconciliation | 100%, or each exception accepted | Accepted before sign-off |
 | **Completeness: values** | Is a value Gen1 had missing in Gen2, with no reason recorded? | Health: Quality | 0 | Reviewed |
-| | Do all Gen1 fields that hold data have somewhere to go? | Mapping sheets | 0 "Not reviewed"; the rest accepted | Accepted by the data owner |
+| | Do all Gen1 fields that hold data have somewhere to go? | Mapping sheets | 0 "Not reviewed"; the rest accepted | Accepted before sign-off |
 | **Accuracy** | Do the values match Gen1, by the agreed mapping? | Verify, all records | 100% | **Yes** |
 | | Does what a person sees in Gen2 match what they see in Gen1? | Sample check | No critical difference in the random sample | **Yes** |
 | **Validity** | Are codes and locations in Master Data? | Verify | 100% | Reviewed |
-| | What was left empty because Gen2 has no such value? | Health: Quality | Each kind accepted, or fixed | Accepted by the data owner |
+| | What was left empty because Gen2 has no such value? | Health: Quality | Each kind accepted, or fixed | Accepted before sign-off |
 | **Consistency** | Does every link resolve, every household have one head, every farmer with a phone one primary number? | Health: Quality | 100% | **Yes** |
 | **Uniqueness** | Do farmers share a Fayda ID, with each other or with a farmer already in Gen2? | Health: Quality | 0 | Reviewed (see section 9) |
 | **Traceability** | Has every record both its Gen1 and its Gen2 ID saved? | Health: IDs | 100% | **Yes** |
@@ -72,7 +72,7 @@ what people want. Only checks 6 and 7 can.**
 ## 5. The sample check against the legacy application
 
 Two people compare a random sample of farmers by hand in both applications, and some
-chosen difficult cases besides. The sample size is agreed with the data owner: a larger
+chosen difficult cases besides. The sample size is agreed beforehand: a larger
 sample finds rarer differences. How to draw it, what to compare and how to record it:
 [`sample-check.md`](sample-check.md).
 
@@ -116,7 +116,7 @@ document of every loaded record**, by program:
 | **1. Baseline**, before any load | Dry run over everything. Agree what is out of scope, the mapping exceptions, and what may be left empty | Every kind of issue is fixed in Gen1 or accepted |
 | **2. Rehearsal**, on a copy of production | Load, verify, health, then checks 6, 7 and 9 | No blocking check fails; time and capacity known |
 | **3. Production load** | Gen1 becomes read-only. Load, verify, health, both documents checks. The registry's workers give out numbers and scores | No blocking check fails; reports kept |
-| **4. Sign-off** | `health` once more, when the numbers and scores are done. Sample check on production. The group below decides | Signed, with accepted exceptions listed |
+| **4. Sign-off** | `health` once more, when the numbers and scores are done. Sample check on production. The decision (section 8) | Signed, with accepted exceptions listed |
 
 **Staff start working in Gen2 after sign-off.** The checks compare Gen2 with Gen1, so they are
 done before anyone edits Gen2, and not repeated afterwards: from then on Gen2 is the record,
@@ -129,15 +129,6 @@ and differences from Gen1 are expected.
 | Any blocking check fails or isn't checked | **No sign-off** |
 | Only reviewed items are open, each accepted in writing | **Sign-off with exceptions** |
 | Everything is as targeted | **Sign-off** |
-
-| Role | Does | Who |
-|---|---|---|
-| Migration lead | Runs the load and the checks, keeps the reports | To be named |
-| Data owner | Agrees targets, accepts exceptions | To be named |
-| Checkers (two) | The sample check | To be named |
-| Registry team | Codes, numbers, scores, problems in Gen2 | To be named |
-| Gen1 team | Fixes source data, explains fields | To be named |
-| Sign-off authority | Decides | To be named |
 
 ### When a check fails
 
@@ -174,11 +165,11 @@ and differences from Gen1 are expected.
 | `migration-report.xlsx`, `issues.csv` | `migrate` | **Yes** | Migration and data teams |
 | `verify-report.xlsx`, `differences.csv` | `verify` | **Yes** | Migration and data teams |
 | Audit and ID tables (`migration`) | `migrate` | **Yes** | Migration and data teams |
-| Sample check results | Checkers | **Yes** | Migration and data teams, sign-off authority |
+| Sample check results | Sample check | **Yes** | Migration and data teams |
 | Documents check log | `move_to_garage.sh check` | File names: may be personal | Migration team |
-| Signed decision with accepted exceptions | Sign-off authority | No | Everyone involved |
+| Signed decision with accepted exceptions | Sign-off | No | Everyone involved |
 
-How long evidence with personal data is kept, and where, needs the data owner's decision.
+How long evidence with personal data is kept, and where, is to be decided.
 
 ## 11. Running it
 
@@ -197,10 +188,9 @@ check, the acceptance test or the documents checks.
 
 ## 12. To agree
 
-1. The targets in section 3, and who owns them
-2. The people in section 8
-3. The sample size and the list of critical fields (`sample-check.md`)
-4. Which exceptions are acceptable, before the load rather than after
-5. How long evidence is kept
-6. When Gen1 becomes read-only
-7. Where a farmer's supporting documents go in Gen2, and what happens to photos
+1. The targets in section 3
+2. The sample size and the list of critical fields (`sample-check.md`)
+3. Which exceptions are acceptable, before the load rather than after
+4. How long evidence is kept
+5. When Gen1 becomes read-only
+6. Where a farmer's supporting documents go in Gen2, and what happens to photos

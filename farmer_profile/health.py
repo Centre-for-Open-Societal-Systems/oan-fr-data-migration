@@ -38,10 +38,10 @@ KINDS = {"farmer": "Farmer", "household": "Household", "member": "HouseholdMembe
 # How the issues name a record of the kind
 _ENTITY = {"farmer": "farmer", "household": "household", "member": "household_member", "phone": "phone",
            "land": "land", "crop": "crop"}
-GROUPS = {"loaded": "Loaded", "failed": "Failed: its household failed",
-          "not_added": "Not added: its household changed after it was migrated",
-          "left_out": "Left out: skipped or dropped, with a recorded reason",
-          "out_of_scope": "Out of scope: not migrated, by rule (see below)",
+GROUPS = {"loaded": "Loaded", "failed": "Failed",
+          "not_added": "Not added",
+          "left_out": "Left out",
+          "out_of_scope": "Out of scope",
           "not_reached": "Not reached yet", "unexplained": "Unexplained"}
 # Why a record is out of scope: when it belongs to nobody in scope, and when it is ruled out itself.
 # Draft, rejected and disabled farmers are in scope: they are migrated. Who is in scope is what
@@ -60,7 +60,7 @@ RULES = {"every Farmer links to a Household": "Farmers without their household",
          "every Crop links to a Land": "Crops without their land",
          "every household has exactly one head member": "Households without exactly one head",
          "every farmer with a phone has exactly one primary number": "Farmers with phones, and not exactly one primary"}
-MADE = "Made by the migration for a farmer in no household (not in Gen1)"
+MADE = "Made for lone farmers"
 
 
 @dataclasses.dataclass
@@ -317,7 +317,7 @@ class Health:
             counts[kind][grp] = n
         for kind in KINDS:
             total, mine = sum(counts[kind].values()), counts[kind]
-            self.add(RECONCILIATION, "Gen1 records", total, record_type=kind)
+            self.add(RECONCILIATION, "In Gen1", total, record_type=kind)
             for grp, label in GROUPS.items():
                 if grp == "unexplained":
                     self.zero(RECONCILIATION, label, mine[grp], total, blocking=True, record_type=kind)
@@ -377,8 +377,7 @@ class Health:
             loaded = self.one("SELECT coalesce(sum(cardinality(farmer_ids)), 0) FROM migration.household_progress "
                               "WHERE last_run_id = %s AND status = 'LOADED'", (self.run_id,))
             self.add(RUNS, "Last run: farmers loaded", int(loaded))
-            if loaded and seconds:
-                self.add(RUNS, "Last run: farmers per minute", int(loaded * 60 / seconds))
+            self.add(RUNS, "Last run: farmers per minute", int(loaded * 60 / seconds) if seconds else None)
         for s, n in self.rows("SELECT status, count(*) FROM migration.run WHERE mode <> 'finalize' GROUP BY 1 ORDER BY 1"):
             if not (s == "RUNNING" and self.status):
                 self.add(RUNS, "Runs by how they ended", n, split_by="Status", split_value=s)
@@ -386,13 +385,13 @@ class Health:
         failed = self.one("SELECT count(*) FROM migration.household_progress WHERE status = 'FAILED'")
         self.zero(RUNS, "Households that failed to load", failed, blocking=True, record_type="household")
         for cls, n in self.rows("SELECT coalesce(error_class, '(unknown)'), count(*) FROM migration.household_progress "
-                                "WHERE status = 'FAILED' GROUP BY 1 ORDER BY 2 DESC"):
+                                "WHERE status = 'FAILED' GROUP BY 1 ORDER BY 2 DESC") or [("(none)", 0)]:
             self.add(RUNS, "Failed households by kind of error", n, failed, split_by="Error", split_value=cls)
         for age, n in self.rows("""
                 SELECT CASE WHEN d < 1 THEN 'under 1 day' WHEN d < 7 THEN '1 to 7 days' ELSE 'over 7 days' END, count(*)
                   FROM (SELECT household_key, extract(epoch FROM clock_timestamp() - min(first_seen)) / 86400 AS d
                           FROM migration.issue WHERE severity = 'failed' AND status = 'OPEN' GROUP BY 1) x
-                 GROUP BY 1 ORDER BY 1"""):
+                 GROUP BY 1 ORDER BY 1""") or [("(none)", 0)]:
             self.add(RUNS, "Failed households by age", n, failed, split_by="Open for", split_value=age)
         taken = self.one("SELECT count(*) FROM migration.household_progress WHERE status = 'FAILED' "
                          "AND error_class = 'UniqueViolation' AND error LIKE %s", ("%functional_record_id%",))
@@ -543,11 +542,11 @@ class Health:
         those that hold a value are cut before it."""
         for entity, field, n in self.rows(
                 "SELECT entity, field, count(*) FROM migration.issue WHERE status = 'OPEN' AND severity = 'dropped' "
-                "AND reason LIKE 'not in Master Data%%' GROUP BY 1, 2 ORDER BY 3 DESC"):
+                "AND reason LIKE 'not in Master Data%%' GROUP BY 1, 2 ORDER BY 3 DESC") or [("", "(none)", 0)]:
             self.add(QUALITY, "Left empty: not in Master Data", n, record_type=entity, split_by="Field", split_value=field)
         for entity, field, n in self.rows(
                 "SELECT entity, field, count(*) FROM migration.issue WHERE status = 'OPEN' AND severity = 'dropped' "
-                "AND reason = 'no registry code for this value' GROUP BY 1, 2 ORDER BY 3 DESC"):
+                "AND reason = 'no registry code for this value' GROUP BY 1, 2 ORDER BY 3 DESC") or [("", "(none)", 0)]:
             self.add(QUALITY, "Left empty: no Gen2 code for the value", n, record_type=entity, split_by="Field", split_value=field)
         count = lambda where, *p: self.one(  # noqa: E731
             "SELECT count(*) FROM migration.issue WHERE status = 'OPEN' AND " + where, p or None)
@@ -591,6 +590,8 @@ class Health:
                                      f"FROM {self.tables[kind_of[register]]} r WHERE {self.mine('r')}")[0]
             self.add(QUALITY, "Required by Gen2's forms, and empty", empty, total, record_type=kind_of[register],
                      split_by="Field", split_value=column)
+        if not seen:
+            self.add(QUALITY, "Required by Gen2's forms, and empty", 0, split_by="Field", split_value="(none required)")
 
     def shared(self):
         t = self.tables["farmer"]
