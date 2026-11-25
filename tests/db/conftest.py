@@ -78,7 +78,8 @@ class World:
         cur.execute("INSERT INTO ir_config_parameter (key, value) VALUES ('database.uuid', 'gen1-uuid')")
         cur = self.gen2.cursor()
         cur.execute("TRUNCATE " + ", ".join([f"g2p_register_{t}" for t in TABLES] + QUEUES))
-        cur.execute("DROP SCHEMA IF EXISTS migration CASCADE")
+        cur.execute("DROP SCHEMA IF EXISTS migration CASCADE; DROP SCHEMA IF EXISTS migration_report CASCADE")
+        cur.execute("DELETE FROM g2p_register_sections")
 
     def source(self, sql, *params):
         cur = self.gen1.cursor()
@@ -113,7 +114,7 @@ class World:
 
     def start(self, *args, fault="", program=HERE / "driver.py", **env):
         """The program, running. Its output goes to a file: nobody has to read a pipe for it to go on."""
-        extra = [] if "--status" in args else ["--pack-only", "--pack", str(self.pack)]
+        extra = [] if "--status" in args or program.name == "health.py" else ["--pack-only", "--pack", str(self.pack)]
         self.started += 1
         log = self.tmp / f"output-{self.started}"
         with open(log, "w") as out:
@@ -164,6 +165,17 @@ class World:
 
     def verify(self, *args):
         return self.wait(self.start(*args, program=ROOT / "verify.py"))
+
+    def health(self):
+        return self.wait(self.start(program=ROOT / "health.py"))
+
+    def measured(self, metric, record_type="", split_value=None):
+        """(count, total, result) in the latest health snapshot."""
+        rows = self.rows("SELECT count, total, result FROM migration_report.measure WHERE metric = %s AND record_type = %s "
+                         "AND (%s::text IS NULL OR split_value = %s) AND snapshot_id = (SELECT max(snapshot_id) FROM "
+                         "migration_report.snapshot WHERE taken_by <> 'verify')", metric, record_type, split_value, split_value)
+        assert len(rows) == 1, (metric, record_type, rows)
+        return rows[0]
 
     def counts(self):
         return {t: self.one(f"SELECT count(*) FROM g2p_register_{t}") for t in TABLES}
