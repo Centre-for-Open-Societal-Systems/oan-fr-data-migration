@@ -158,16 +158,16 @@ and differences from Gen1 are expected.
 
 ## 10. Evidence kept for sign-off
 
-| Evidence | From | Personal data | Share with |
-|---|---|---|---|
-| `health-report.xlsx` | `health` | No, counts only | Everyone involved |
-| Results of each measurement | `migration_report` in the registry database | No, counts only | Everyone involved |
-| `migration-report.xlsx`, `issues.csv` | `migrate` | **Yes** | Migration and data teams |
-| `verify-report.xlsx`, `differences.csv` | `verify` | **Yes** | Migration and data teams |
-| Audit and ID tables (`migration`) | `migrate` | **Yes** | Migration and data teams |
-| Sample check results | Sample check | **Yes** | Migration and data teams |
-| Documents check log | `move_to_garage.sh check` | File names: may be personal | Migration team |
-| Signed decision with accepted exceptions | Sign-off | No | Everyone involved |
+| Evidence | From | Personal data |
+|---|---|---|
+| `health-report.xlsx` | `health` | No, counts only |
+| Results of each measurement | `migration_report` in the registry database | No, counts only |
+| `migration-report.xlsx`, `issues.csv` | `migrate` | **Yes** |
+| `verify-report.xlsx`, `differences.csv` | `verify` | **Yes** |
+| Audit and ID tables (`migration`) | `migrate` | **Yes** |
+| Sample check results | Sample check | **Yes** |
+| Documents check log | `move_to_garage.sh check` | File names: may be personal |
+| Signed decision with accepted exceptions | Sign-off | No |
 
 How long evidence with personal data is kept, and where, is to be decided.
 
