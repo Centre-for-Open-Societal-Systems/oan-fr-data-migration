@@ -41,8 +41,25 @@ _ENTITY = {"farmer": "farmer", "household": "household", "member": "household_me
 GROUPS = {"loaded": "Loaded", "failed": "Failed: its household failed",
           "not_added": "Not added: its household changed after it was migrated",
           "left_out": "Left out: skipped or dropped, with a recorded reason",
-          "out_of_scope": "Out of scope: archived, disabled or ended in Gen1, or not a farmer's",
+          "out_of_scope": "Out of scope: not migrated, by rule (see below)",
           "not_reached": "Not reached yet", "unexplained": "Unexplained"}
+# Why a record is out of scope: when it belongs to nobody in scope, and when it is ruled out itself.
+# Draft, rejected and disabled farmers are in scope: they are migrated. Who is in scope is what
+# source.units says, so a change of the migration's rules (e.g. archived farmers) is a change here too.
+_OUT_OF_SCOPE = {"farmer": ("The farmer is archived in Gen1", ""),
+                 "household": ("No active farmer is in it", ""),
+                 "member": ("No active farmer is in the household", "The membership has ended in Gen1"),
+                 "phone": ("The farmer is archived in Gen1", "The number is disabled in Gen1"),
+                 "land": ("The farmer is archived in Gen1", ""),
+                 "crop": ("The farmer is archived in Gen1", "")}
+# What verification.structure_checks asks for, as what is wrong when it is not so
+RULES = {"every Farmer links to a Household": "Farmers without their household",
+         "every HouseholdMember links to a Household": "Members without their household",
+         "every FarmerPhone links to a Farmer": "Phones without their farmer",
+         "every Land links to a Farmer": "Lands without their farmer",
+         "every Crop links to a Land": "Crops without their land",
+         "every household has exactly one head member": "Households without exactly one head",
+         "every farmer with a phone has exactly one primary number": "Farmers with phones, and not exactly one primary"}
 MADE = "Made by the migration for a farmer in no household (not in Gen1)"
 
 
@@ -239,7 +256,7 @@ class Health:
         people = "(p.is_registrant OR p.id = ANY(%s)) AND NOT p.is_group"
         registrants = set(chosen)
         extra = [f for u in planned for f in u.farmers if f not in registrants]
-        self.copy("h_gen1", f"SELECT 'farmer', p.id, p.id, NULL, NOT p.active FROM res_partner p WHERE {people}", (extra,), with_id)
+        self.copy("h_gen1", f"SELECT 'farmer', p.id, p.id, NULL, false FROM res_partner p WHERE {people}", (extra,), with_id)
         self.copy("h_gen1", "SELECT 'household', p.id, NULL, p.id, false FROM res_partner p WHERE p.is_group "
                             "AND (p.is_registrant OR p.id = ANY(%s))", ([h for u in planned for h in u.households],), with_id)
         self.copy("h_gen1", "SELECT 'member', m.id, m.individual, m.\"group\", coalesce(m.is_ended, false) "
@@ -265,7 +282,7 @@ class Health:
 
     def reconcile(self):
         self.cur.execute("""
-            CREATE TEMP TABLE h_class (kind text, odoo_id bigint, farmer_id bigint, key text, grp text) ON COMMIT DROP;
+            CREATE TEMP TABLE h_class (kind text, odoo_id bigint, farmer_id bigint, key text, grp text, why text) ON COMMIT DROP;
             CREATE TEMP TABLE h_owned ON COMMIT DROP AS
               SELECT DISTINCT u.key FROM h_farmer_unit u JOIN migration.migrated_record m
                   ON m.kind = 'farmer' AND m.odoo_id = u.farmer_id
@@ -275,6 +292,7 @@ class Health:
             unit = "h_household_unit h ON h.household_id = g.household_id" if kind in ("household", "member") \
                 else "h_farmer_unit h ON h.farmer_id = g.farmer_id"
             named = "g.farmer_id" if kind == "member" else "g.odoo_id"  # a skipped member is named by the person
+            none, ruled = _OUT_OF_SCOPE[kind]
             self.cur.execute(f"""
                 INSERT INTO h_class
                 SELECT g.kind, g.odoo_id, g.farmer_id, h.key, CASE
@@ -286,7 +304,7 @@ class Health:
                   WHEN EXISTS (SELECT 1 FROM migration.issue i WHERE i.household_key = h.key
                                 AND i.severity IN ('skipped', 'dropped') AND i.entity = %s AND i.odoo_id = {named}::text)
                     THEN 'left_out'
-                  ELSE 'look' END
+                  ELSE 'look' END, CASE WHEN h.key IS NULL THEN '{none}' ELSE '{ruled}' END
                   FROM h_gen1 g LEFT JOIN {unit}
                   LEFT JOIN migration.migrated_record m ON m.kind = g.kind AND m.odoo_id = g.odoo_id
                   LEFT JOIN {table} r ON r.internal_record_id = m.gen2_id
@@ -308,12 +326,15 @@ class Health:
                 else:
                     self.add(RECONCILIATION, label, mine[grp], total, record_type=kind)
             in_scope = total - mine["out_of_scope"]
-            self.all_of(RECONCILIATION, "In scope and loaded", mine["loaded"], in_scope, record_type=kind)
+            self.all_of(RECONCILIATION, "Loaded, of what should be", mine["loaded"], in_scope, record_type=kind)
             gone = self.one("SELECT count(*) FROM migration.migrated_record m WHERE m.kind = %s AND NOT EXISTS "
                             "(SELECT 1 FROM h_gen1 g WHERE g.kind = m.kind AND g.odoo_id = m.odoo_id)", (kind,))
             self.add(RECONCILIATION, "Loaded, and no longer in Gen1", gone, record_type=kind)
             made = self.one("SELECT count(*) FROM migration.migrated_record WHERE kind = %s", (f"solo_{kind}",))
             self.add(RECONCILIATION, MADE, made, record_type=kind)
+        for kind, why, n in self.rows("SELECT kind, why, count(*) FROM h_class WHERE grp = 'out_of_scope' GROUP BY 1, 2 "
+                                      "ORDER BY 1, 3 DESC"):
+            self.add(RECONCILIATION, "Out of scope, by reason", n, record_type=kind, split_by="Why", split_value=why)
         for by in ("region", "source", "state"):
             for value, loaded, total in self.rows(f"""
                     SELECT coalesce(p.{by}, '(none)'), count(*) FILTER (WHERE c.grp = 'loaded'), count(*)
@@ -363,7 +384,7 @@ class Health:
                 self.add(RUNS, "Runs by how they ended", n, split_by="Status", split_value=s)
 
         failed = self.one("SELECT count(*) FROM migration.household_progress WHERE status = 'FAILED'")
-        self.zero(RUNS, "Failed households still open", failed, blocking=True, record_type="household")
+        self.zero(RUNS, "Households that failed to load", failed, blocking=True, record_type="household")
         for cls, n in self.rows("SELECT coalesce(error_class, '(unknown)'), count(*) FROM migration.household_progress "
                                 "WHERE status = 'FAILED' GROUP BY 1 ORDER BY 2 DESC"):
             self.add(RUNS, "Failed households by kind of error", n, failed, split_by="Error", split_value=cls)
@@ -459,7 +480,9 @@ class Health:
         gen1 = {"farmer": ("res.partner", "res_partner"), "phone": ("g2p.phone.number", "g2p_phone_number"),
                 "land": ("g2p.land.information", "g2p_land_information"),
                 "crop": ("g2p.crop.information", "g2p_crop_information")}
-        skip = {"link_internal_record_id", "created_at", "last_approved_at", "country_code"}
+        # the last two Gen2 fills itself, also where Gen1 has nothing
+        skip = {"link_internal_record_id", "created_at", "last_approved_at", "country_code", "functional_record_id",
+                "record_status"}
         with self.conn.cursor() as cur:
             cur.execute("SELECT table_name, column_name, data_type FROM information_schema.columns "
                         "WHERE table_schema = 'public' AND table_name = ANY(%s)", ([t for _, t in gen1.values()],))
@@ -511,7 +534,7 @@ class Health:
                 lost = max(0, a - b - reasons)
                 unexplained += lost
                 if a or b:
-                    self.add(QUALITY, "Filled in Gen2, of filled in Gen1", b, a, AMBER if lost else INFO, record_type=kind,
+                    self.add(QUALITY, "Values that arrived", b, a, AMBER if lost else INFO, record_type=kind,
                              split_by="Field", split_value=f"{name} -> {column}")
             self.zero(QUALITY, "Values lost without a reason", unexplained, record_type=kind)
 
@@ -546,7 +569,7 @@ class Health:
         checks = V.Checks()
         V.structure_checks(self.one, self.models, checks, self.mine)
         for c in checks.rows:
-            self.zero(QUALITY, f"Breaks the rule: {c['check']}", c["found"], blocking=True)
+            self.zero(QUALITY, RULES[c["check"]], c["found"], blocking=True)
 
     def required(self):
         """Gen2's required fields (its own form settings) that are empty on migrated records."""
@@ -622,6 +645,16 @@ class Health:
         self.all_of(IDS, "Land IDs that arrived", same, all_, record_type="land")
 
 
+def verify_said(engine, run_id):
+    """What verify.py concluded, if it ran over everything since the last load: (failed checks, checks), else None."""
+    with engine.connect() as conn:
+        row = conn.exec_driver_sql("""
+            SELECT count(*) FILTER (WHERE m.result = 'RED'), count(*) FROM migration_report.measure m
+             WHERE m.snapshot_id = (SELECT max(snapshot_id) FROM migration_report.snapshot WHERE taken_by = 'verify'
+               AND taken_at > (SELECT max(coalesce(finished_at, started_at)) FROM migration.run WHERE mode <> 'finalize'))""").first()
+    return tuple(row) if row and row[1] else None
+
+
 def take(engine, source_dsn, models, log, taken_by, status=None) -> dict:
     """Measure, store and return: {"measures", "overall", "run_id", "history"}."""
     ensure(engine)
@@ -641,4 +674,5 @@ def take(engine, source_dsn, models, log, taken_by, status=None) -> dict:
         conn.close()
     overall = worst(measures)
     save(engine, taken_by, run_id, measures, overall)
-    return {"measures": measures, "overall": overall, "run_id": run_id, "history": history(engine)}
+    return {"measures": measures, "overall": overall, "run_id": run_id, "history": history(engine),
+            "verify": None if status else verify_said(engine, run_id)}

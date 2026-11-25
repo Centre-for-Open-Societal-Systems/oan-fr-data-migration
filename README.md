@@ -294,7 +294,8 @@ and `verify`. A load that reaches its end also measures it, into the Health shee
 | `NOT CHECKED` | Not measured yet, and never green. What `verify` finds counts until the next load, and only when it ran over every farmer |
 | `INFO` | A number without a target |
 
-It exits 0 when green or amber, 3 when red, 1 when it couldn't measure.
+It exits 0 when green or amber, 3 when red, 1 when it couldn't measure. Every sheet and
+metric is explained in `docs/quality-assessment/reading-the-reports.md`.
 
 **What it doesn't judge** is Gen1's own data: an age that is wrong in Gen1 and arrives
 unchanged is a correct migration. Records edited in Gen2 since (the registry's history

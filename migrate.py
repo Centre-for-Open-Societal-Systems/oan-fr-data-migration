@@ -733,6 +733,9 @@ class Run:
             got = attempt("the migration's tables", lambda: self.read_tables(tracking, report), None)
             if got:
                 issues, issue_counts, failed, changed, runs, overall = got
+                for r in runs:  # its end is recorded after the reports
+                    if r["run_id"] == self.run_id:
+                        r.update(status=status, counts=self.counts(), error=self.error)
         if not (self.run_dir / "issues.csv").exists():
             with open(self.run_dir / "issues.csv", "w", newline="", encoding="utf-8") as handle:
                 csv.DictWriter(handle, fieldnames=tracking.ISSUE_COLUMNS).writeheader()

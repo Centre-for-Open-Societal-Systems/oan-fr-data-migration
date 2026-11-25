@@ -38,12 +38,18 @@ def test_every_record_is_in_one_group(world):
     assert groups(world, "crop") == {"loaded": 1, "left_out": 1}
     for kind in ("farmer", "household", "member", "phone", "land", "crop"):
         assert sum(groups(world, kind).values()) == world.measured("Gen1 records", kind)[0]
-    assert world.measured("Failed households still open", "household") == (1, None, "RED")
+    assert world.measured("Households that failed to load", "household") == (1, None, "RED")
     from farmer_profile.health import MADE
     assert world.measured(MADE, "household")[0] == 4 and world.measured(MADE, "land")[0] == 0
     sheet = workbook(world)["Reconciliation"]
     adds_up = [c.value for c in sheet[1]].index("Adds up")
-    assert [r[adds_up].value for r in sheet.iter_rows(min_row=2)] == [True] * 6
+    assert [r[adds_up].value for r in sheet.iter_rows(min_row=2, max_row=7)] == ["yes"] * 6
+    assert sorted(world.rows("SELECT record_type, split_value, count FROM migration_report.measure WHERE metric = "
+                             "'Out of scope, by reason' AND snapshot_id = (SELECT max(snapshot_id) FROM "
+                             "migration_report.snapshot)")) == [
+        ("farmer", "The farmer is archived in Gen1", 1), ("land", "The farmer is archived in Gen1", 2),
+        ("member", "The membership has ended in Gen1", 1), ("phone", "The farmer is archived in Gen1", 1),
+        ("phone", "The number is disabled in Gen1", 1)]
 
 
 def test_a_record_that_disappeared_is_unexplained(world):
@@ -67,10 +73,10 @@ def test_a_record_never_loaded_is_unexplained(world):
 
 BREAKS = {
     "head": ("UPDATE g2p_register_household_members SET is_head = false WHERE first_name = 'Abebe1'",
-             "Breaks the rule: every household has exactly one head member", ""),
+             "Households without exactly one head", ""),
     "phone": ("UPDATE g2p_register_farmer_phones SET is_primary = false WHERE phone_number = '911000001'",
-              "Breaks the rule: every farmer with a phone has exactly one primary number", ""),
-    "link": ("UPDATE g2p_register_crops SET link_internal_record_id = 'nowhere'", "Breaks the rule: every Crop links to a Land", ""),
+              "Farmers with phones, and not exactly one primary", ""),
+    "link": ("UPDATE g2p_register_crops SET link_internal_record_id = 'nowhere'", "Crops without their land", ""),
     "both ids": ("DELETE FROM migration.migrated_record WHERE kind = 'phone' AND odoo_id = 2",
                  "Migrated records with both IDs saved", "phone"),
     "farmer id": ("UPDATE g2p_register_farmers SET functional_record_id = 'FR-X' WHERE first_name = 'Abebe2'",
@@ -147,7 +153,7 @@ def test_lost_values_and_shared_ids(world):
     world.source("INSERT INTO g2p_reg_id (id, partner_id, id_type, value) VALUES (1, 1, 1, '1234 5678 9012'), "
                  "(2, 2, 1, '123456789012'), (3, 3, 1, '2222 2222 2222'), (4, 3, 2, '3333333333333333')")
     world.migrate()
-    married = ("Filled in Gen2, of filled in Gen1", "farmer", "martial_status -> marital_status")
+    married = ("Values that arrived", "farmer", "martial_status -> marital_status")
     assert world.measured(*married) == (5, 6, "INFO")          # one left empty, with a reason
     assert world.measured("Values lost without a reason", "farmer")[0] == 0
     assert world.measured("Farmers sharing a Fayda ID with another migrated farmer", "farmer") == (2, None, "AMBER")
@@ -203,11 +209,11 @@ def test_the_workbooks(world):
     world.migrate()
     wb = openpyxl.load_workbook(world.folder() / "migration-report.xlsx")
     assert wb.sheetnames[0] == "Health" and wb["Health"]["B2"].value == "AMBER"
-    assert any(r[1].value == "Values matching Gen1 (verify)" and r[10].value == "NOT CHECKED" for r in wb["Health"].iter_rows())
+    assert any(r[2].value == "Values matching Gen1 (verify)" and r[1].value == "NOT CHECKED" for r in wb["Health"].iter_rows())
     assert "HEALTH: AMBER" in (world.folder() / "summary.txt").read_text()
     world.health()
     wb = workbook(world)
-    assert wb.sheetnames == ["Overview", "Reconciliation", "Run health", "Quality", "IDs", "By region, source and status", "Trend"]
+    assert wb.sheetnames == ["Overview", "Reconciliation", "Run health", "Quality", "IDs", "By region, source and status", "Trend", "Guide"]
     assert wb["Trend"].max_column == 3 + 2  # the load's own, and this one
     # a dry run measures nothing
     world.migrate("--all", "--dry-run")
@@ -266,5 +272,74 @@ def test_it_does_not_depend_on_who_created_or_approved(world):
     world.rows("UPDATE g2p_register_household_members SET is_head = false WHERE first_name = 'Abebe1'")
     world.rows("DELETE FROM migration.migrated_record WHERE kind = 'phone' AND odoo_id = 2")
     assert world.health()[0] == 3
-    assert world.measured("Breaks the rule: every household has exactly one head member")[2] == "RED"
+    assert world.measured("Households without exactly one head")[2] == "RED"
     assert world.measured("Migrated records with both IDs saved", "phone")[2] == "RED"
+
+
+def test_the_overview_says_what_to_do_and_where(world):
+    """Every problem on the Overview has its meaning and leads to the cell that holds its number."""
+    from farmer_profile.health_guide import GUIDE
+    world.farmers(6)
+    world.source("UPDATE res_partner SET birthdate = '20023-01-01' WHERE id = 3")
+    world.source("INSERT INTO g2p_phone_number (id, partner_id, phone_no) VALUES (900, 1, '12')")
+    world.source("INSERT INTO g2p_reg_id (id, partner_id, id_type, value) VALUES (1, 1, 1, '1234 5678 9012'), (2, 2, 1, '1234 5678 9012')")
+    world.migrate()
+    world.rows("DELETE FROM g2p_register_lands WHERE land_id = 'L2-1'")
+    assert world.health()[0] == 3
+    wb = workbook(world)
+    ws = wb["Overview"]
+    header = next(r for r in ws.iter_rows() if r[0].value == "Metric")
+    at = {c.value: c.column for c in header}
+    problems = [r for r in ws.iter_rows(min_row=header[0].row + 1) if r[1].value in ("RED", "AMBER", "NOT CHECKED") and r[6].value]
+    assert {"Unexplained", "Households that failed to load", "Farmers sharing a Fayda ID with another migrated farmer"} <= \
+        {r[0].value for r in problems}
+    assert [r[1].value for r in problems] == sorted((r[1].value for r in problems), key=["RED", "NOT CHECKED", "AMBER"].index)
+    for r in problems:
+        sheet, cell = r[at["Where"] - 1].value.rsplit(", ", 1)
+        count = r[at["Count"] - 1].value
+        shown = wb[sheet][cell].value
+        if r[0].value == "Loaded, of what should be":
+            assert shown == round(100 * count / r[at["Out of"] - 1].value, 1)
+        else:
+            assert shown == count, (r[0].value, sheet, cell)
+        assert r[at["What it means"] - 1].value
+    assert any("verify has not run" in str(r[1].value) for r in ws.iter_rows(max_row=6))
+    # every metric is explained
+    metrics = {m for (m,) in world.rows("SELECT DISTINCT metric FROM migration_report.measure WHERE area <> 'Verify'")}
+    assert not metrics - set(GUIDE)
+    guide = {r[0].value for r in wb["Guide"].iter_rows()}
+    assert metrics <= guide
+    # what needs attention comes first
+    results = [r[0].value for r in wb["Quality"].iter_rows(min_row=2)]
+    assert results == sorted(results, key=["RED", "NOT CHECKED", "AMBER", "INFO", "GREEN"].index)
+
+
+def test_every_metric_is_in_the_document():
+    from pathlib import Path
+
+    from farmer_profile.health_guide import GUIDE
+    text = (Path(__file__).resolve().parents[2] / "docs" / "quality-assessment" / "reading-the-reports.md").read_text()
+    assert [m for m in GUIDE if m not in text] == []
+
+
+def test_the_overview_counts_checks(world):
+    """Every area has a fixed number of checks: its colours add up to it. INFO metrics are not checks."""
+    world.farmers(3)
+    world.source("INSERT INTO g2p_crop_information (id, partner_id) VALUES (64, 1)")
+    world.migrate()
+    world.health()
+    ws = workbook(world)["Overview"]
+    rows = {r[0].value: [c.value for c in r] for r in ws.iter_rows() if r[0].value in (
+        "Reconciliation", "Run health", "Quality", "IDs", "Total")}
+    assert {k: v[6] for k, v in rows.items()} == {"Reconciliation": 18, "Run health": 9, "Quality": 15, "IDs": 11, "Total": 53}
+    for v in rows.values():
+        assert sum(v[2:6]) == v[6]
+
+
+def test_draft_rejected_and_disabled_farmers_are_in_scope(world):
+    world.farmers(4)
+    world.source("UPDATE res_partner SET state = 'draft' WHERE id = 1")
+    world.source("UPDATE res_partner SET state = 'rejected' WHERE id = 2")
+    world.source("UPDATE res_partner SET disabled = now() WHERE id = 3")
+    world.migrate()
+    assert groups(world, "farmer") == {"loaded": 4}
