@@ -187,6 +187,32 @@ def _digits(s):
     return "".join(ch for ch in str(s or "") if ch.isdigit())
 
 
+# -- the migration's own tables -----------------------------------------------------------
+
+def progress_checks(engine, models, checks, left_out):
+    """left_out: status -> the households not compared."""
+    from . import tracking
+    failed, changed = left_out["FAILED"], left_out["CHANGED"]
+    checks.add("Progress", "no household failed", 0, len(failed),
+               detail=("not in the registry: " + ", ".join(failed[:20])) if failed else "")
+    checks.add("Progress", "no household changed in farmer profile since it was migrated", 0, len(changed), warn_only=True,
+               detail=("not compared; correct them in the registry: " + ", ".join(changed[:20])) if changed else "")
+    for kind, n in tracking.missing_records(engine, models).items():
+        checks.add("Progress", f"every {kind} recorded as migrated is in the registry", 0, n)
+
+
+def existing_members(engine, models, wanted) -> list:
+    """wanted: (household key, member record id): the keys whose member record is in the registry."""
+    table, out = models.G2PRegisterHouseholdMember.__tablename__, set()
+    with engine.connect() as conn:
+        for i in range(0, len(wanted), 10000):
+            of = {rid: key for key, rid in wanted[i:i + 10000]}
+            for rid in conn.execute(text(f"SELECT internal_record_id FROM {table} WHERE internal_record_id = ANY(:ids)"),
+                                    {"ids": list(of)}).scalars():
+                out.add(of[rid])
+    return sorted(out)
+
+
 # -- the registry on its own --------------------------------------------------------------
 
 _LINKS = [("Farmer", "Household"), ("HouseholdMember", "Household"), ("FarmerPhone", "Farmer"),
@@ -206,6 +232,10 @@ def registry_checks(conn, models, master, checks):
                 (SELECT count(*) FROM {t('HouseholdMember')} m
                   WHERE m.link_internal_record_id = h.internal_record_id AND m.is_head) <> 1""")
     checks.add("Registry", "every household has exactly one head member", 0, n)
+
+    n = one(f"""SELECT count(*) FROM (SELECT link_internal_record_id FROM {t('FarmerPhone')} WHERE created_by = :by
+                GROUP BY 1 HAVING count(*) FILTER (WHERE is_primary) <> 1) x""")
+    checks.add("Registry", "every farmer with a phone has exactly one primary number", 0, n)
 
     for reg in F.WRITTEN:
         n = one(f"SELECT count(*) FROM {t(reg)} WHERE created_by = :by AND (record_name IS NULL OR search_text IS NULL)")

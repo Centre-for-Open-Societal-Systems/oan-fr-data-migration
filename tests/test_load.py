@@ -35,7 +35,7 @@ def test_sql_file_is_one_transaction(tmp_path):
     p.tables["g2p_register_crops"] = (["internal_record_id", "commodity"], [("x", "CROP_TEFF")])
     f = SqlFile(tmp_path / "m.sql", ["header"])
     f.add(p)
-    f.finish([("queue", "SELECT 1")])
+    f.finish([], [("queue", "SELECT 1")])
     text = (tmp_path / "m.sql").read_text()
     assert text.index("BEGIN;") < text.index("COPY") < text.index("INSERT INTO") < text.index("SELECT 1") < text.index("COMMIT;")
     assert "ON CONFLICT (internal_record_id) DO NOTHING" in text

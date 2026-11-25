@@ -38,6 +38,7 @@ The other steps:
 ./run.sh sql          # write migration.sql instead of loading
 ./run.sh apply        # run the latest migration.sql on the registry database
 ./run.sh fresh        # reset + migrate + verify in one go
+./run.sh status       # how far the migration is, and what is open
 ./run.sh summary      # show the latest migrate and verify summaries again
 ./run.sh report       # open the latest Excel report
 ./run.sh reset        # empty the registry database
@@ -81,9 +82,11 @@ farmer_profile/           the migration's code
   summary.py                writes summary.txt
   runlog.py                 the run folder and the log
   verification.py           the checks verify.py runs
+  tracking.py               the audit and progress tables: what a rerun resumes from
 tests/                    tests (./run.sh test)
 Dockerfile                the job image, built on the registry's own staff-api image
 deploy/job.yaml           runs the image as a one-off Kubernetes Job
+deploy/migration-schema.sql  the audit and progress tables
 docs/                     technical migration approach
 .env.example              every setting, to copy to .env (.env is never committed)
 dev/                      local helpers, used by run.sh
@@ -106,8 +109,8 @@ the folders are the record of every run. `out/` is not committed.
 | `summary.txt` | both | The summary printed at the end of the run. For a migration: records read, added and already there; farmer profile fields per status, and how many hold data; registry columns per status, and how many are filled; what was queued after the load; the data that didn't reach the registry; the issues by kind. For a verification: the verdict and every check that didn't pass. |
 | `migrate.log` / `verify.log` | both | The full log, also printed: settings (passwords masked), every batch with its counts and time, errors with their traceback, and the summary |
 | `summary.json` | both | The same counts, for scripts |
-| `migration-report.xlsx` | migrate | Sheets: Summary, Farmer profile fields, Gen2 columns, Issues summary, Issues, Batches (see "Reports" below) |
-| `issues.csv` | migrate | Every issue: a value left out, a record not migrated, or something worth a look |
+| `migration-report.xlsx` | migrate | Sheets: Summary, Failed households, Changed in Gen1, Issues summary, Issues, Runs, Batches, and the mapping (see "Reports" below) |
+| `issues.csv` | migrate | Every issue, of every run so far: a household that failed or has changed, a value left out, a record not migrated, or something worth a look. A dry run lists its own only |
 | `migration.sql` | migrate with `sql` / `--sql-out` | The load as one SQL transaction, to review and run with psql (`./run.sh apply` locally) |
 | `verify-report.xlsx` | verify | Sheets: Summary with the verdict, Checks, Columns (values compared per column), Differences |
 | `differences.csv` | verify | Every value that differs |
@@ -119,6 +122,8 @@ run, `sql` or `verify`:
   lands and crops in their `g2p_register_*` tables. Each one is marked
   `created_by = 'farmer-profile-migration'`, and its id comes from its Odoo
   record.
+- **Progress and issues:** the tables of the `migration` schema. See "Stopping, resuming
+  and fixing" below.
 - **Queued work for the registry's workers:** rows in
   `g2p_functional_id_generation_queue` (farmer and household ids) and
   `g2p_completion_score_computation_queue` (farmer completion scores).
@@ -165,8 +170,8 @@ the Master Data Service, through the registry's own client
   against Master Data again.
 
 A record migrated while a value was missing keeps that field empty. A rerun
-skips records that are already there, so if Master Data gains the value later,
-the field isn't filled in.
+skips households that are already there, so if Master Data gains the value
+later, the field isn't filled in.
 
 The settings are the ones the chart's Jobs use:
 
@@ -186,6 +191,81 @@ dev/fake-mds.sh CROP_TEFF,ET04041110        # Master Data without teff and one k
 ./run.sh migrate
 ```
 
+## Stopping, resuming and fixing
+
+**The household is migrated whole or not at all:** the household, its members, and
+their phones, lands and crops. A farmer in no household is one of their own.
+Households that share a member go together. Batches are a matter of speed only.
+
+**To go on after a stop, a crash or a fix, run the same command again.** What is
+already in is skipped. Progress is written in the transaction that writes the
+records, so the two can't disagree, whenever the run is killed.
+
+| It ended with | What to do |
+|---|---|
+| Exit 0 | Everything loaded. Run `verify` |
+| Exit 3: some households failed | The rest is in. Fix them in farmer profile (sheet "Failed households") and run again: only they are tried again |
+| Exit 1: stopped early | Read why at the top of the summary, then run again |
+| Killed | Run again |
+| "another migration run is active" | Only one run works at a time. Wait for it |
+
+What happens to each household:
+
+| On a run, it is | Then |
+|---|---|
+| new, or failed before | migrated |
+| already in, the same in farmer profile | skipped, without preparing it again |
+| already in, **changed** in farmer profile since | **reported, not touched.** Correct it in the registry |
+| in the registry from before these tables existed | adopted, if all its records are there; reported if only some are |
+
+> **Fix what a dry run reports before the real load.** Once a household is in, a
+> fix in farmer profile, a new land or a new member does not reach the registry:
+> the household is reported as changed. Completely new households still load.
+
+Kinds of issue: `failed` (household left out), `changed` (not touched), `skipped`
+(a record not migrated), `dropped` (a value left out), `check` (migrated, worth a
+look). Each is kept once, `OPEN` until a run finds it gone, then `RESOLVED`.
+
+What stops a run: a database that stays away after three more tries, a table or
+column that is missing, a worker process that dies twice, `--max-failures`
+households failing in one run (100, in case they all have one cause), or
+`SIGTERM`/Ctrl-C (it finishes its batch first). A database that is away never
+marks a household as failed.
+
+**Another source is refused.** The run remembers farmer profile's own
+`database.uuid`. Another database may use the same Odoo ids for other people. If
+it really is the same data (Odoo gives a copy a new uuid), confirm with
+`--accept-source <uuid>`.
+
+**The tables** are in the schema `migration` of the registry's database
+(`deploy/migration-schema.sql`): `run`, `household_progress`, `migrated_record`,
+`issue`. A run creates them if it may; otherwise a DBA runs the file. They hold
+personal data: give them the access rules of the register tables. A dry run
+doesn't write them.
+
+`migrated_record` has every record that is in, with its id in farmer profile (Odoo)
+and its id in the registry: farmers, households, members, phones, lands and crops,
+and the household and member made for a farmer in none (`solo_household`,
+`solo_member`, under the farmer's Odoo id). To find either from the other:
+
+```sql
+SELECT gen2_id FROM migration.migrated_record WHERE kind = 'farmer' AND odoo_id = 12;
+SELECT kind, odoo_id FROM migration.migrated_record WHERE gen2_id = '<internal_record_id>';
+```
+
+What is open:
+
+```sql
+SELECT severity, entity, odoo_id, field, value, reason
+  FROM migration.issue WHERE status = 'OPEN' ORDER BY severity;
+```
+
+`TARGET_DSN` must reach Postgres directly, not through PgBouncer in transaction
+mode: the lock that allows one run at a time is a session lock.
+
+**Not covered:** the same person as two records (twice in farmer profile, or in
+the registry already through intake). The migration doesn't compare people.
+
 ## Reports
 
 The files themselves are listed under "What it creates" above.
@@ -196,9 +276,12 @@ The script itself works out every number in `summary.txt` and in the workbook fr
 databases. A dry run reports the same, counted from the rows it would have
 written.
 
-`migration-report.xlsx` answers where each field went:
+The workbook starts with what happened: Summary, Failed households, Changed in
+Gen1, Issues and Runs. The last sheets are the mapping, which is the same in every
+run but for the counts. They say what the migration covers, not how a run went.
+The Summary lists only its exceptions: fields that hold data and don't reach Gen2.
 
-- **Farmer profile fields** lists every field of the farmer profile models
+- **Mapping - Gen1 fields** lists every field of the farmer profile models
   read. The list is read from Odoo's own field table, so it shows what the
   database has, not what the code expects. For each field it gives its status
   and Gen2 column, and how many of the migrated records hold a value.
@@ -213,7 +296,7 @@ written.
   | Odoo technical | Odoo's own bookkeeping |
   | Not reviewed | A field the field map doesn't know yet. It should be 0: when a new field appears, add it to the map |
 
-- **Gen2 columns** lists every column of the registers in scope, where its
+- **Mapping - Gen2 columns** lists every column of the registers in scope, where its
   value comes from, and how many migrated records hold a value.
 
   | Status | Meaning |
@@ -233,7 +316,7 @@ exists.
 ### Generated after the load
 
 When a record is approved, the registry queues work for its workers. At the
-end of a run (not a dry run, and not one with a failed batch), the migration
+end of a run (not a dry run, and not one that stopped early), the migration
 queues the same work for every migrated record that doesn't have it yet:
 
 - **Functional ids, Farmer and Household:** a row in
@@ -251,8 +334,8 @@ history starts empty.
 
 1. **Select.** `source.py` picks the farmers in scope: `res_partner` rows that
    are registrants, are not groups, and are active. They are ordered by
-   household, so a batch holds whole households. Archived partners are not
-   migrated.
+   household. `units()` groups them into whole households, which are never split
+   between batches. Archived partners are not migrated.
 2. **Read.** For each batch, it reads those farmers with every member of
    their households, their ids, income sources, phone numbers, lands, crops
    and enumerators.
@@ -281,10 +364,11 @@ history starts empty.
      registry's models value for value. This was checked on all 4,966 rows of
      the local data, computed columns included.
    - **Record ids** are uuid5 of the Odoo record (`farmer-profile/<kind>/<odoo id>`).
-     A record that is already there is left alone, so a rerun only adds what's
-     missing.
-   - **After a failed batch,** the batch is rolled back. Run the same command
-     again: the earlier batches are found and skipped.
+     A record that is already there is left alone.
+   - **Progress and issues** are written in the same transaction (`tracking.py`).
+   - **A value the registry refuses** rolls the batch back. It is split in half
+     until the household at fault is alone: the rest loads, and that one is
+     recorded as failed.
 6. **Finalize.** `finalize.py` queues the functional ids and completion
    scores described above.
 7. **Report.** `inventory.py` counts the values on both sides, and `report.py`
@@ -396,8 +480,10 @@ fill it in:
      ```sh
      psql -v ON_ERROR_STOP=1 -f migration.sql "<registry database>"
      ```
-     psql prints the rows each table got. Running it a second time adds
-     nothing.
+     psql prints the rows each table got. It refuses to run a second time, beside
+     another migration run, or on a registry that has been migrated into since the
+     file was written. Unlike a direct run, one value the registry refuses rolls back
+     the whole file.
   3. **Run `verify.py`**, as after a direct run.
 
   The file is a snapshot. Generate it close to when you run it, because
@@ -417,10 +503,13 @@ Options:
 
 | Option | Effect |
 |---|---|
-| `--batch-size N` | Farmers per transaction. The default is 500. |
+| `--batch-size N` | Farmers per transaction, in whole households. The default is 500. |
 | `--workers N` | Processes preparing batches in parallel. The default is up to 4. |
 | `--sql-out` | Writes `migration.sql` instead of loading. See "Two ways to load". |
-| `--keep-going` | Logs a failed batch and continues. By default the run stops. |
+| `--max-failures N` | Stops when N households failed in this run. The default is 100. |
+| `--stop-on-error` | Stops after the first household that fails. By default it is recorded and the run goes on. |
+| `--accept-source UUID` | Goes on although the registry was migrated from another farmer profile database |
+| `--status` | Shows how far the migration is and what is open |
 | `--no-finalize` | Doesn't queue the functional ids and scores |
 | `--finalize-only` | Only queues them |
 | `--ids ...` | Migrates only these Odoo partner ids |

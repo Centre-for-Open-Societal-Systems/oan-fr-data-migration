@@ -17,7 +17,11 @@
 #    pod that mounts the claim:           kubectl -n <ns> cp <pod>:/out ./migration-runs
 # 5. Verify: the same Job with args ["verify.py"] (a new name, e.g. farmer-profile-verify).
 #
-# Rerunning the same Job is safe: records already migrated are left alone.
+# To go on after a stop, a crash or a fix: delete the Job and apply it again. What is
+# already in is skipped. The Job shows as Failed when households failed (exit code 3: the
+# rest is in) and when it stopped early (exit code 1): its log's summary says which.
+# Only one run works at a time. TARGET_DSN must reach Postgres directly: the lock that
+# ensures it does not survive PgBouncer's transaction pooling.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -43,6 +47,7 @@ spec:
         app.kubernetes.io/name: farmer-profile-migration
     spec:
       restartPolicy: Never
+      terminationGracePeriodSeconds: 120   # on a stop it finishes its batch and writes its reports
       containers:
         - name: migrate
           image: REGISTRY/farmer-profile-migration:TAG

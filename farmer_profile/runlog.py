@@ -14,8 +14,13 @@ LOGGER = "farmer_profile"
 
 def start(report_dir: str, command: str, argv: list) -> tuple[Path, logging.Logger]:
     started = datetime.now(timezone.utc)
-    run_dir = Path(report_dir) / f"{started:%Y%m%d-%H%M%S}-{command}"
-    run_dir.mkdir(parents=True, exist_ok=False)
+    for n in range(1, 100):  # a second run in the same second gets a folder of its own
+        run_dir = Path(report_dir) / f"{started:%Y%m%d-%H%M%S}-{command}{'' if n == 1 else f'-{n}'}"
+        try:
+            run_dir.mkdir(parents=True, exist_ok=False)
+            break
+        except FileExistsError:
+            continue
 
     # The registry libraries log JSON at INFO; keep their warnings and errors only
     logging.getLogger().setLevel(logging.WARNING)

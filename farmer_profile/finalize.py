@@ -63,11 +63,14 @@ SELECT gen_random_uuid()::text, {rid}, r.internal_record_id, s.section_id, 'PEND
     return out
 
 
-def queue(engine, log, completion_scores=True) -> dict:
+def queue(engine, log, completion_scores=True, before=None) -> dict:
+    """before(cur) runs first in the transaction."""
     counts = {}
     raw = engine.raw_connection()
     try:
         cur = raw.cursor()
+        if before:
+            before(cur)
         for label, sql in statements(engine, completion_scores):
             cur.execute(sql)
             counts[label] = cur.rowcount

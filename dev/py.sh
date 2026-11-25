@@ -24,7 +24,7 @@ case "$command" in migrate|verify) ;; *) echo "unknown command $command: migrate
 
 SOURCE_CONTAINER=${SOURCE_CONTAINER:-fp-db}
 SOURCE_DB=${SOURCE_DB:-odk_a}
-OPENPYXL=$(grep -m1 -oP 'openpyxl==\S+' "$MIG_ROOT/Dockerfile")
+OPENPYXL=$(sed -n 's/.*\(openpyxl==[^ ]*\).*/\1/p' "$MIG_ROOT/Dockerfile" | head -1)
 
 have=$(git -C "$PACK_DIR" rev-parse HEAD)
 [ "$have" = "$PACK_REF" ] || { echo "pack $PACK_DIR is at $have, the migration pins $PACK_REF" >&2; exit 1; }
@@ -42,7 +42,7 @@ export SOURCE_DSN
 mkdir -p "$MIG_ROOT/out"
 docker run --rm --network "$NET" --entrypoint sh \
   -v "$MIG_ROOT:/migration:ro" -v "$PACK_DIR:/pack:ro" -v "$MIG_ROOT/out:/out" -v fr-migration-pydeps:/deps \
-  "${EXTENSION_MOUNT[@]}" \
+  ${EXTENSION_MOUNT[@]+"${EXTENSION_MOUNT[@]}"} \
   -e PYTHONPATH="/deps:/migration${EXTENSION_PATH:+:$EXTENSION_PATH}" -e PYTHONDONTWRITEBYTECODE=1 \
   -e REGISTRY_EXTENSION_MODULE="${REGISTRY_EXTENSION_MODULE:-openg2p_registry_farmer_extension}" \
   -e MDS_API_URL -e MDS_TOKEN_URL -e MDS_CLIENT_ID -e MDS_CLIENT_SECRET \

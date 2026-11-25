@@ -26,6 +26,10 @@ We propose using a controlled ETL pipeline to migrate data from the Gen1 Odoo Fa
 
 - Gen1 will remain read-only.
 - Deterministic IDs will make reruns consistent.
+- The household is migrated whole or not at all; one that fails is recorded and left out, and the rest go on.
+- Progress and issues are kept in audit tables in the Gen2 database, written with the records, so a stopped run resumes where it left off.
+- A household that changed in Gen1 after it was migrated is reported and not touched.
+- Only one run works at a time, and a different Gen1 database is refused.
 - `ON CONFLICT DO NOTHING` will prevent duplicate insertion.
 - Dry-run mode will execute the migration and roll back all changes.
 - Invalid and unmapped values will be recorded in issue reports.
