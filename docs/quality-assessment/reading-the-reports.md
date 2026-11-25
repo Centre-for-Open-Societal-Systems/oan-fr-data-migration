@@ -9,7 +9,6 @@ There are three workbooks. **Start with the health report. Open the others when 
 | Answers | **Is it good enough to sign off?** | **Which household, which record, and why?** | **Which value differs from Gen1?** |
 | Open it | First | When you need to know which farmer it is | When values don't match |
 | Holds | Counts only | Names, numbers and IDs | Names, numbers and IDs |
-| Share with | Everyone involved | The migration and data teams only | The migration and data teams only |
 | Folder | `out/<time>-health/` | `out/<time>-migrate/` | `out/<time>-verify/` |
 
 [`examples/`](examples) has one of each, made from invented data: use them to follow along.

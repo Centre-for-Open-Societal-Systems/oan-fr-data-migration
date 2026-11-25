@@ -28,7 +28,6 @@ their records in Gen2 (section 6).
    fails blocks sign-off, however good the rest is.
 5. **Not checked is never a pass.**
 6. **Tell apart** what was already so in Gen1, and what the migration caused.
-7. **Protect personal data.** What is shared widely holds counts only.
 
 ## 3. What "quality" means here
 
