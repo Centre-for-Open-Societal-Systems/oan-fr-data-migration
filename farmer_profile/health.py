@@ -7,6 +7,12 @@ how the runs went, whether the data arrived, and whether it can be traced.
 Counts only. What is stored and shown holds no names, numbers, ids or error
 messages; an error is its kind. Farmer profile is only read. In the registry,
 only temporary tables are written, and the results (schema migration_report).
+
+A record is the migration's when migration.migrated_record has it, and edited in
+Gen2 when the registry's history has a row for it that is not the migration's: the
+registry writes one for every approved change. History the migration brings from
+Gen1 must be in migrated_record too (its history_record_id as gen2_id), like every
+record it writes. Neither depends on what created_by and last_approved_by hold.
 """
 import collections
 import contextlib
@@ -20,7 +26,7 @@ from sqlalchemy import text
 from . import fieldmap as F
 from . import source
 from .load import copy_data
-from .transform import LARGE_PARCEL_HA, MIGRATED_BY
+from .transform import LARGE_PARCEL_HA, record_id
 
 SCHEMA_SQL = Path(__file__).resolve().parents[1] / "deploy" / "migration-report-schema.sql"
 GREEN, AMBER, RED, INFO, NOT_CHECKED = "GREEN", "AMBER", "RED", "INFO", "NOT CHECKED"
@@ -156,6 +162,7 @@ class Health:
         self.cur = raw.cursor()
         self.measures = []
         self.tables = {k: getattr(models, f"G2PRegister{r}").__tablename__ for k, r in KINDS.items()}
+        self.history = {k: getattr(models, f"G2PRegisterHistory{r}").__tablename__ for k, r in KINDS.items()}
 
     def add(self, *args, **kw):
         self.measures.append(Measure(*args, **kw))
@@ -167,6 +174,13 @@ class Health:
     def one(self, sql, params=None):
         self.cur.execute(sql, params)
         return self.cur.fetchone()[0]
+
+    def mine(self, alias):
+        return f"{alias}.internal_record_id IN (SELECT gen2_id FROM migration.migrated_record)"
+
+    def edited(self, kind, alias):
+        return (f"EXISTS (SELECT 1 FROM {self.history[kind]} e WHERE e.internal_record_id = {alias}.internal_record_id "
+                "AND e.history_record_id NOT IN (SELECT gen2_id FROM migration.migrated_record))")
 
     def zero(self, area, metric, count, total=None, blocking=False, bad=None, **kw):
         """A metric that should be 0."""
@@ -191,12 +205,13 @@ class Health:
 
     # -- Gen1's records, in temporary tables beside the registry's -----------------------
 
-    def copy(self, table, query, params=None):
+    def copy(self, table, query, params=None, change=None):
+        """change: what is written for a row as read."""
         cur = self.conn.cursor(name=f"copy_{table}")
         cur.itersize = 50000
         cur.execute(query, params)
         while rows := cur.fetchmany(50000):
-            self.cur.copy_expert(f"COPY {table} FROM STDIN", io.StringIO(copy_data(rows)))
+            self.cur.copy_expert(f"COPY {table} FROM STDIN", io.StringIO(copy_data(map(change, rows) if change else rows)))
         cur.close()
 
     def copy_gen1(self):
@@ -206,36 +221,40 @@ class Health:
         self.cur.execute("""
             CREATE TEMP TABLE h_farmer_unit (farmer_id bigint, key text) ON COMMIT DROP;
             CREATE TEMP TABLE h_household_unit (household_id bigint, key text) ON COMMIT DROP;
-            CREATE TEMP TABLE h_gen1 (kind text, odoo_id bigint, farmer_id bigint, household_id bigint, ruled_out boolean)
-              ON COMMIT DROP;
+            CREATE TEMP TABLE h_gen1 (kind text, odoo_id bigint, farmer_id bigint, household_id bigint, ruled_out boolean,
+              gen2_id text) ON COMMIT DROP;
+            CREATE TEMP TABLE h_made (kind text, gen2_id text) ON COMMIT DROP;
             CREATE TEMP TABLE h_person (farmer_id bigint, region text, source text, state text, legacy_number text,
-              fayda text, rid text, odk text, both_fayda boolean) ON COMMIT DROP;
+              uid text, fan text, rid text, odk text) ON COMMIT DROP;
             CREATE TEMP TABLE h_land (odoo_id bigint, land_id text) ON COMMIT DROP;""")
         self.cur.copy_expert("COPY h_farmer_unit FROM STDIN", io.StringIO(copy_data(
             (f, u.key) for u in planned for f in u.farmers)))
         self.cur.copy_expert("COPY h_household_unit FROM STDIN", io.StringIO(copy_data(
             (h, u.key) for u in planned for h in u.households)))
+        self.cur.copy_expert("COPY h_made FROM STDIN", io.StringIO(copy_data(
+            (kind, record_id(kind, f"solo-{f}")) for u in planned if not u.households for f in u.farmers
+            for kind in ("household", "member"))))
+        with_id = lambda row: (*row, record_id(row[0], row[1]))  # noqa: E731
         # people in scope only as members of a farmer's household count as farmers too
         people = "(p.is_registrant OR p.id = ANY(%s)) AND NOT p.is_group"
         registrants = set(chosen)
         extra = [f for u in planned for f in u.farmers if f not in registrants]
-        self.copy("h_gen1", f"SELECT 'farmer', p.id, p.id, NULL, NOT p.active FROM res_partner p WHERE {people}", (extra,))
+        self.copy("h_gen1", f"SELECT 'farmer', p.id, p.id, NULL, NOT p.active FROM res_partner p WHERE {people}", (extra,), with_id)
         self.copy("h_gen1", "SELECT 'household', p.id, NULL, p.id, false FROM res_partner p WHERE p.is_group "
-                            "AND (p.is_registrant OR p.id = ANY(%s))", ([h for u in planned for h in u.households],))
+                            "AND (p.is_registrant OR p.id = ANY(%s))", ([h for u in planned for h in u.households],), with_id)
         self.copy("h_gen1", "SELECT 'member', m.id, m.individual, m.\"group\", coalesce(m.is_ended, false) "
-                            "FROM g2p_group_membership m WHERE m.\"group\" IS NOT NULL")
+                            "FROM g2p_group_membership m WHERE m.\"group\" IS NOT NULL", None, with_id)
         for kind, table, ruled_out in (("phone", "g2p_phone_number", "x.disabled IS NOT NULL"),
                                        ("land", "g2p_land_information", "false"),
                                        ("crop", "g2p_crop_information", "false")):
             self.copy("h_gen1", f"SELECT '{kind}', x.id, x.partner_id, NULL, {ruled_out} FROM {table} x "
-                                f"JOIN res_partner p ON p.id = x.partner_id WHERE {people}", (extra,))
+                                f"JOIN res_partner p ON p.id = x.partner_id WHERE {people}", (extra,), with_id)
         first = lambda t: ("(SELECT r.value FROM g2p_reg_id r JOIN g2p_id_type t ON t.id = r.id_type "  # noqa: E731
                            f"WHERE r.partner_id = p.id AND t.name = '{t}' ORDER BY r.id LIMIT 1)")
         self.copy("h_person", f"""
             SELECT p.id, reg.name, src.name, coalesce(p.state, '(none)'), nullif(p.farmer_id, ''),
-                   coalesce(nullif({first('UID')}, ''), nullif({first('FAN')}, '')), nullif({first('RID')}, ''),
-                   nullif({first('Farmer ODK ACK ID')}, ''),
-                   coalesce({first('UID')}, '') <> '' AND coalesce({first('FAN')}, '') <> ''
+                   nullif(replace({first('UID')}, ' ', ''), ''), nullif(replace({first('FAN')}, ' ', ''), ''),
+                   nullif({first('RID')}, ''), nullif({first('Farmer ODK ACK ID')}, '')
               FROM res_partner p LEFT JOIN g2p_region reg ON reg.id = p.region
               LEFT JOIN g2p_import_source src ON src.id = p.rec_import_source WHERE {people}""", (extra,))
         self.copy("h_land", "SELECT id, land_id FROM g2p_land_information WHERE coalesce(land_id, '') <> ''")
@@ -408,8 +427,7 @@ class Health:
             self.add(QUALITY, "Gen1 status to Gen2 status", n, record_type="farmer", split_by="Gen1 -> Gen2",
                      split_value=value)
         for kind, table in self.tables.items():
-            n = self.one(f"SELECT count(*) FROM {table} WHERE created_by = %s AND last_approved_by <> %s",
-                         (MIGRATED_BY, MIGRATED_BY))
+            n = self.one(f"SELECT count(*) FROM {table} r WHERE {self.mine('r')} AND {self.edited(kind, 'r')}")
             self.add(QUALITY, "Edited in Gen2 since (not compared)", n, record_type=kind)
 
     def verified(self):
@@ -465,9 +483,9 @@ class Health:
             totals = collections.Counter()
             rows = self.rows(f"""
                 SELECT m.odoo_id, m.gen2_id FROM migration.migrated_record m
-                  JOIN {self.tables[kind]} r ON r.internal_record_id = m.gen2_id AND r.last_approved_by = %s
+                  JOIN {self.tables[kind]} r ON r.internal_record_id = m.gen2_id AND NOT {self.edited(kind, 'r')}
                   JOIN migration.household_progress p ON p.household_key = m.household_key AND p.status = 'LOADED'
-                 WHERE m.kind = %s""", (MIGRATED_BY, kind))
+                 WHERE m.kind = %s""", (kind,))
             left = [_count_expr(name, have[(table, name)]) for name, _ in pairs]
             right = [f"count(nullif(nullif(nullif(nullif(btrim(x.\"{c}\"::text), ''), 'null'), '[]'), '{{}}'))" for _, c in pairs]
             for i in range(0, len(rows), 20000):
@@ -526,8 +544,7 @@ class Health:
     def structure(self):
         from . import verification as V
         checks = V.Checks()
-        V.structure_checks(lambda sql: self.one(sql.replace("%", "%%").replace(":by", "%(by)s"), {"by": MIGRATED_BY}),
-                           self.models, checks)
+        V.structure_checks(self.one, self.models, checks, self.mine)
         for c in checks.rows:
             self.zero(QUALITY, f"Breaks the rule: {c['check']}", c["found"], blocking=True)
 
@@ -548,7 +565,7 @@ class Health:
                 continue
             seen.add((register, column))
             empty, total = self.rows(f"SELECT count(*) FILTER (WHERE nullif(btrim(\"{column}\"::text), '') IS NULL), count(*) "
-                                     f"FROM {self.tables[kind_of[register]]} WHERE created_by = %s", (MIGRATED_BY,))[0]
+                                     f"FROM {self.tables[kind_of[register]]} r WHERE {self.mine('r')}")[0]
             self.add(QUALITY, "Required by Gen2's forms, and empty", empty, total, record_type=kind_of[register],
                      split_by="Field", split_value=column)
 
@@ -558,44 +575,50 @@ class Health:
         a, b = fayda.format("a"), fayda.format("b")
         live = "record_status <> 'ARCHIVED'"
         with_other = self.one(f"""
-            SELECT coalesce(sum(n), 0) FROM (SELECT count(*) AS n FROM {t} a WHERE a.created_by = %s AND a.{live}
-               AND {a} IS NOT NULL GROUP BY {a} HAVING count(*) > 1) x""", (MIGRATED_BY,))
+            SELECT coalesce(sum(n), 0) FROM (SELECT count(*) AS n FROM {t} a WHERE {self.mine('a')} AND a.{live}
+               AND {a} IS NOT NULL GROUP BY {a} HAVING count(*) > 1) x""")
         self.zero(QUALITY, "Farmers sharing a Fayda ID with another migrated farmer", int(with_other), record_type="farmer")
         in_gen2 = self.one(f"""
-            SELECT count(*) FROM {t} a WHERE a.created_by = %s AND a.{live} AND {a} IN
-               (SELECT {b} FROM {t} b WHERE b.created_by <> %s AND b.{live} AND {b} IS NOT NULL)""", (MIGRATED_BY, MIGRATED_BY))
+            SELECT count(*) FROM {t} a WHERE {self.mine('a')} AND a.{live} AND {a} IN
+               (SELECT {b} FROM {t} b WHERE NOT {self.mine('b')} AND b.{live} AND {b} IS NOT NULL)""")
         self.zero(QUALITY, "Farmers sharing a Fayda ID with a farmer already in Gen2", in_gen2, record_type="farmer")
         for column, name in (("rid", "an RID"), ("odk_farmer_id", "an ODK farmer ID")):
             n = self.one(f"""
-                SELECT coalesce(sum(n), 0) FROM (SELECT count(*) AS n FROM {t} WHERE created_by = %s
-                   AND coalesce({column}, '') <> '' GROUP BY {column} HAVING count(*) > 1) x""", (MIGRATED_BY,))
+                SELECT coalesce(sum(n), 0) FROM (SELECT count(*) AS n FROM {t} a WHERE {self.mine('a')}
+                   AND coalesce({column}, '') <> '' GROUP BY {column} HAVING count(*) > 1) x""")
             self.add(QUALITY, f"Farmers sharing {name} with another migrated farmer", int(n), record_type="farmer")
 
     # -- can every record be traced -------------------------------------------------------------
 
     def ids(self):
         for kind, table in self.tables.items():
-            n, all_ = self.rows(f"SELECT count(m.gen2_id), count(*) FROM {table} r LEFT JOIN migration.migrated_record m "
-                                "ON m.gen2_id = r.internal_record_id WHERE r.created_by = %s", (MIGRATED_BY,))[0]
+            # what the migration would have made of Gen1's records, and is in Gen2
+            n, all_ = self.rows(f"""
+                SELECT count(m.gen2_id), count(*) FROM (SELECT gen2_id FROM h_gen1 WHERE kind = %s
+                        UNION ALL SELECT gen2_id FROM h_made WHERE kind = %s) g
+                  JOIN {table} r ON r.internal_record_id = g.gen2_id
+                  LEFT JOIN migration.migrated_record m ON m.gen2_id = g.gen2_id""", (kind, kind))[0]
             self.all_of(IDS, "Migrated records with both IDs saved", n, all_, blocking=True, record_type=kind)
         t = self.tables["farmer"]
         base = (f"FROM migration.migrated_record m JOIN h_person p ON p.farmer_id = m.odoo_id JOIN {t} r "
                 "ON r.internal_record_id = m.gen2_id JOIN migration.household_progress h ON h.household_key = m.household_key "
-                "WHERE m.kind = 'farmer' AND h.status = 'LOADED' AND r.last_approved_by = %s")
-        for metric, gen1, gen2, blocking in (
-                ("Gen1 Farmer IDs that arrived unchanged", "p.legacy_number", "r.functional_record_id", True),
-                ("Fayda IDs (UID, else FAN) that arrived", "p.fayda", "r.foundational_id", False),
-                ("RIDs that arrived", "p.rid", "r.rid", False),
-                ("ODK farmer IDs that arrived", "p.odk", "r.odk_farmer_id", False)):
-            same, all_ = self.rows(f"SELECT count(*) FILTER (WHERE {gen1} = {gen2}), count({gen1}) {base}", (MIGRATED_BY,))[0]
+                f"WHERE m.kind = 'farmer' AND h.status = 'LOADED' AND NOT {self.edited('farmer', 'r')}")
+        for metric, gen1, same_as, blocking in (
+                ("Gen1 Farmer IDs that arrived unchanged", "p.legacy_number", "= r.functional_record_id", True),
+                # written with or without spaces
+                ("Fayda IDs (UID or FAN) that arrived", "coalesce(p.uid, p.fan)", None, False),
+                ("RIDs that arrived", "p.rid", "= r.rid", False),
+                ("ODK farmer IDs that arrived", "p.odk", "= r.odk_farmer_id", False)):
+            same = f"{gen1} {same_as}" if same_as else "replace(r.foundational_id, ' ', '') IN (p.uid, p.fan)"
+            same, all_ = self.rows(f"SELECT count(*) FILTER (WHERE {same}), count({gen1}) {base}")[0]
             self.all_of(IDS, metric, same, all_, blocking=blocking, record_type="farmer")
-        lost = self.one(f"SELECT count(*) FILTER (WHERE p.both_fayda) {base}", (MIGRATED_BY,))
+        lost = self.one(f"SELECT count(*) FILTER (WHERE p.uid IS NOT NULL AND p.fan IS NOT NULL) {base}")
         self.add(IDS, "FANs not carried: the farmer has a UID too", lost, record_type="farmer")
         same, all_ = self.rows(f"""
             SELECT count(*) FILTER (WHERE l.land_id = r.land_id), count(*) FROM migration.migrated_record m
               JOIN h_land l ON l.odoo_id = m.odoo_id JOIN {self.tables['land']} r ON r.internal_record_id = m.gen2_id
               JOIN migration.household_progress h ON h.household_key = m.household_key
-             WHERE m.kind = 'land' AND h.status = 'LOADED' AND r.last_approved_by = %s""", (MIGRATED_BY,))[0]
+             WHERE m.kind = 'land' AND h.status = 'LOADED' AND NOT {self.edited('land', 'r')}""")[0]
         self.all_of(IDS, "Land IDs that arrived", same, all_, record_type="land")
 
 

@@ -77,7 +77,8 @@ class World:
                     "g2p_reg_id, g2p_phone_number, g2p_land_information, g2p_crop_information, ir_config_parameter")
         cur.execute("INSERT INTO ir_config_parameter (key, value) VALUES ('database.uuid', 'gen1-uuid')")
         cur = self.gen2.cursor()
-        cur.execute("TRUNCATE " + ", ".join([f"g2p_register_{t}" for t in TABLES] + QUEUES))
+        cur.execute("TRUNCATE " + ", ".join([f"g2p_register_{t}" for t in TABLES]
+                                            + [f"g2p_register_history_{t}" for t in TABLES] + QUEUES))
         cur.execute("DROP SCHEMA IF EXISTS migration CASCADE; DROP SCHEMA IF EXISTS migration_report CASCADE")
         cur.execute("DELETE FROM g2p_register_sections")
 
@@ -176,6 +177,13 @@ class World:
                          "migration_report.snapshot WHERE taken_by <> 'verify')", metric, record_type, split_value, split_value)
         assert len(rows) == 1, (metric, record_type, rows)
         return rows[0]
+
+    def edited(self, table, where):
+        """As an approved change leaves it: a row in the registry's history."""
+        self.rows(f"INSERT INTO g2p_register_history_{table} (history_record_id, internal_record_id, tab_id, section_id, "
+                  f"change_request_source, is_primary_section, record_status, created_by, created_at, approved_by, approved_at) "
+                  f"SELECT gen_random_uuid()::text, internal_record_id, 't', 's', 'STAFF', true, 'ACTIVE', 'x', now(), 'x', now() "
+                  f"FROM g2p_register_{table} WHERE {where}")
 
     def counts(self):
         return {t: self.one(f"SELECT count(*) FROM g2p_register_{t}") for t in TABLES}

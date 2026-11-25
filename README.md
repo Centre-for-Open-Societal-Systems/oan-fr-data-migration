@@ -297,8 +297,8 @@ and `verify`. A load that reaches its end also measures it, into the Health shee
 It exits 0 when green or amber, 3 when red, 1 when it couldn't measure.
 
 **What it doesn't judge** is Gen1's own data: an age that is wrong in Gen1 and arrives
-unchanged is a correct migration. Records edited in Gen2 since, and households changed
-in Gen1 since, are not compared.
+unchanged is a correct migration. Records edited in Gen2 since (the registry's history
+has a row for them that the migration didn't write), and households changed in Gen1 since, are not compared.
 
 The results are kept in the schema `migration_report` of the registry's database
 (`snapshot`, `measure`; `deploy/migration-report-schema.sql`), e.g. for dashboards.

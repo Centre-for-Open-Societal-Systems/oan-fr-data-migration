@@ -155,8 +155,11 @@ def test_lost_values_and_shared_ids(world):
     assert world.measured("Gen1 status to Gen2 status", "farmer", "draft -> ACTIVE")[0] == 1
     world.rows("UPDATE g2p_register_farmers SET marital_status = NULL WHERE first_name = 'Abebe2'")
     # a farmer registered in Gen2 itself, and one edited there
-    world.rows("UPDATE g2p_register_farmers SET created_by = 'staff', foundational_id = '222222222222' WHERE first_name = 'Abebe6'")
-    world.rows("UPDATE g2p_register_farmers SET last_approved_by = 'staff', marital_status = NULL WHERE first_name = 'Abebe5'")
+    world.rows("INSERT INTO g2p_register_farmers SELECT (jsonb_populate_record(NULL::g2p_register_farmers, to_jsonb(f) || "
+               "'{\"internal_record_id\": \"new\", \"created_by\": \"staff\", \"functional_record_id\": null, "
+               "\"foundational_id\": \"222222222222\"}')).* FROM g2p_register_farmers f WHERE first_name = 'Abebe6'")
+    world.rows("UPDATE g2p_register_farmers SET marital_status = NULL WHERE first_name = 'Abebe5'")
+    world.edited("farmers", "first_name = 'Abebe5'")
     world.health()
     assert world.measured("Values lost without a reason", "farmer") == (1, None, "AMBER")
     assert world.measured("Farmers sharing a Fayda ID with a farmer already in Gen2", "farmer")[0] == 1
@@ -226,3 +229,42 @@ def test_a_report_that_fails_does_not_fail_the_load(world):
 def test_nothing_migrated_yet(world):
     code, out = world.health()
     assert code == 1 and "nothing has been migrated yet" in out
+
+
+def test_it_does_not_depend_on_who_created_or_approved(world):
+    """Issues 4, 6 and 7: created_by and last_approved_by become Gen1's, and the Fayda ID loses its spaces."""
+    from farmer_profile.health import IDS, QUALITY, RECONCILIATION, RUNS
+    world.farmers(6)
+    world.household(9001, 1, 2)
+    world.source("UPDATE res_partner SET martial_status = 'married', farmer_id = CASE WHEN id = 1 THEN 'FR-0000000001' END")
+    world.source("INSERT INTO g2p_reg_id (id, partner_id, id_type, value) VALUES (1, 1, 1, '1234 5678 9012'), "
+                 "(2, 2, 1, '1234 5678 9012'), (3, 3, 2, '3333333333333333'), (4, 4, 1, '1111 1111 1111'), "
+                 "(5, 4, 2, '4444444444444444')")
+    world.migrate()
+    world.edited("farmers", "first_name = 'Abebe6'")
+
+    def measures():
+        assert world.health()[0] == 0
+        return sorted(world.rows(
+            "SELECT area, metric, record_type, split_by, split_value, count, total, result FROM migration_report.measure "
+            "WHERE area = ANY(%s) AND snapshot_id = (SELECT max(snapshot_id) FROM migration_report.snapshot) "
+            "AND metric NOT LIKE 'Last run: %%'", [RECONCILIATION, RUNS, QUALITY, IDS]))
+    before = measures()
+    assert world.measured("Edited in Gen2 since (not compared)", "farmer")[0] == 1
+    assert world.measured("Fayda IDs (UID or FAN) that arrived", "farmer") == (4, 4, "GREEN")
+    for t in ("farmers", "households", "household_members", "farmer_phones", "lands", "crops"):
+        world.rows(f"UPDATE g2p_register_{t} SET created_by = 'Gen1 clerk', last_approved_by = 'Gen1 approver'")
+    world.rows("UPDATE g2p_register_farmers SET foundational_id = replace(foundational_id, ' ', '')")
+    # Gen1's history, brought by the migration and recorded as its own, is not an edit
+    world.edited("farmers", "first_name = 'Abebe2'")
+    world.rows("ALTER TABLE migration.migrated_record DROP CONSTRAINT migrated_record_kind_check")
+    world.rows("INSERT INTO migration.migrated_record (kind, odoo_id, gen2_id, household_key) SELECT 'history', 1, "
+               "h.history_record_id, 'household-9001' FROM g2p_register_history_farmers h JOIN g2p_register_farmers f "
+               "USING (internal_record_id) WHERE f.first_name = 'Abebe2'")
+    assert measures() == before
+    # and it still sees what is wrong
+    world.rows("UPDATE g2p_register_household_members SET is_head = false WHERE first_name = 'Abebe1'")
+    world.rows("DELETE FROM migration.migrated_record WHERE kind = 'phone' AND odoo_id = 2")
+    assert world.health()[0] == 3
+    assert world.measured("Breaks the rule: every household has exactly one head member")[2] == "RED"
+    assert world.measured("Migrated records with both IDs saved", "phone")[2] == "RED"
