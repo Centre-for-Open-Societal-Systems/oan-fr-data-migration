@@ -1,8 +1,9 @@
 """Verify a farmer profile -> Farmer registry migration.
 
-Reads both databases (both read-only) and checks the registry against farmer
-profile: see farmer_profile/verification.py for what is checked. Exits 1 when
-a check fails.
+Reads both databases and checks the registry against farmer profile: see
+farmer_profile/verification.py for what is checked. Exits 1 when a check fails.
+A run over every farmer also saves its results, as counts, for the health
+report (schema migration_report); nothing else is written.
 
   python verify.py                 every farmer in scope
   python verify.py --limit 10 --complete
@@ -41,7 +42,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     init_registry()
-    from farmer_profile import report, runlog, source, summary as text_summary, tracking, verification as V
+    from farmer_profile import health, report, runlog, source, summary as text_summary, tracking, verification as V
     from farmer_profile.codes import PackCodes
     from farmer_profile.geo import Geo
     from farmer_profile.transform import MIGRATED_BY, Result, Transformer
@@ -163,6 +164,10 @@ def main(argv=None):
         ("Target", runlog._safe_dsn(os.environ.get("TARGET_DSN", ""))),
         ("Farmers verified", len(chosen)), ("Values checked against", master.describe()), ("Duration (s)", round(time.monotonic() - started, 1)),
     ])
+    try:
+        health.save_verify(engine, checks.rows, everything)
+    except Exception as exc:  # the checks themselves stand
+        log.error("the results could not be saved for the health report: %s", str(exc).strip())
     report.verify_workbook(run_dir / "verify-report.xlsx", info, checks.rows, comparison.column_rows(), kept)
     (run_dir / "summary.json").write_text(json.dumps(
         {"info": info, "result": result, "differences": n_diff,

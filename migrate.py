@@ -442,6 +442,7 @@ class Run:
         self.after_load = {}
         self.stop = {"asked": False}
         self.error = None
+        self.health, self.no_health = None, "Measured after a load that reaches its end: run health.py"
 
     # -- before ------------------------------------------------------------------------
 
@@ -650,6 +651,8 @@ class Run:
                     self.log.error("stopped: %s", self.error)
                     if self.sql_file and not self.sql_file.handle.closed:
                         self.finalize(False)
+                if self.tracked and not self.error and not self.args.finalize_only:
+                    self.measure_health(status)
                 try:
                     self.reports(status)
                 except Exception:
@@ -677,6 +680,17 @@ class Run:
             return SOME_FAILED
         self.log.info("done")
         return OK
+
+    def measure_health(self, status):
+        """After a load that reached its end. Whatever goes wrong here does not change how the load ended."""
+        from farmer_profile import health
+        try:
+            models = importlib.import_module("openg2p_registry_extensions.register_domain.models")
+            self.health = health.take(self.engine, os.environ["SOURCE_DSN"], models, self.log, "migrate", status)
+        except Exception as exc:
+            self.no_health = "The health could not be measured: see the log. Run health.py"
+            self.log.error("the health could not be measured (the load is not affected; run health.py): %s",
+                           str(exc).strip() or type(exc).__name__)
 
     def counts(self):
         out = {"planned": len(self.planned), **{_WORDS[k]: n for k, n in self.households.items()}}
@@ -739,7 +753,8 @@ class Run:
         if self.error:
             info["Stopped"] = self.error
         data = {"info": info, "counts": self.totals, "after_load": self.after_load, "households": counts,
-                "overall": overall, "failed": failed, "changed": changed, "runs": runs}
+                "overall": overall, "failed": failed, "changed": changed, "runs": runs,
+                "health": self.health, "no_health": self.no_health}
         attempt("the workbook's data", lambda: report.migration_workbook(
             self.run_dir / "migration-report.xlsx", data, fields, columns, issues, issue_counts, self.batches), None)
         severity_counts = collections.Counter()
@@ -755,6 +770,9 @@ class Run:
             (["migration.sql"] if args.sql_out else [])
         lines = text_summary.migration(info, data, fields, columns, issue_counts, files, dry_run=args.dry_run,
                                        sql_out=args.sql_out, finalized=not args.no_finalize, error=self.error)
+        if self.health:
+            from farmer_profile import health_report
+            lines = [*health_report.lines(self.health), "", *lines]
         (self.run_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
         for line in lines:
             log.info("%s", line)

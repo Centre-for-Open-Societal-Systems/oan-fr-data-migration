@@ -8,6 +8,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from . import fieldmap as F
+from . import health_report
 from .summary import mapping_exceptions
 
 # Excel holds about a million rows; the CSV next to the workbook has every issue
@@ -182,6 +183,7 @@ def migration_workbook(path, run: dict, source_fields: list, target_cols: list, 
         for row in sheet.iter_rows(min_row=1, max_row=1):
             for cell in row:
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
+    health_report.add_sheet(wb, run.get("health"), run.get("no_health") or "Not measured.")
     wb.save(path)
 
 

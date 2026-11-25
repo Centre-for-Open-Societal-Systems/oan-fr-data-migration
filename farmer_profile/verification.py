@@ -219,10 +219,10 @@ _LINKS = [("Farmer", "Household"), ("HouseholdMember", "Household"), ("FarmerPho
           ("Land", "Farmer"), ("Crop", "Land")]
 
 
-def registry_checks(conn, models, master, checks):
+def structure_checks(one, models, checks):
+    """Links resolve, one head per household, one primary number per farmer. one(sql): its one value;
+    :by in the sql is the migration's mark."""
     t = lambda reg: getattr(models, f"G2PRegister{reg}").__tablename__
-    one = lambda sql, **p: conn.execute(text(sql), {"by": MIGRATED_BY, **p}).scalar()
-
     for child, parent in _LINKS:
         n = one(f"SELECT count(*) FROM {t(child)} c WHERE c.created_by = :by AND NOT EXISTS "
                 f"(SELECT 1 FROM {t(parent)} p WHERE p.internal_record_id = c.link_internal_record_id)")
@@ -236,6 +236,12 @@ def registry_checks(conn, models, master, checks):
     n = one(f"""SELECT count(*) FROM (SELECT link_internal_record_id FROM {t('FarmerPhone')} WHERE created_by = :by
                 GROUP BY 1 HAVING count(*) FILTER (WHERE is_primary) <> 1) x""")
     checks.add("Registry", "every farmer with a phone has exactly one primary number", 0, n)
+
+
+def registry_checks(conn, models, master, checks):
+    t = lambda reg: getattr(models, f"G2PRegister{reg}").__tablename__
+    one = lambda sql, **p: conn.execute(text(sql), {"by": MIGRATED_BY, **p}).scalar()
+    structure_checks(one, models, checks)
 
     for reg in F.WRITTEN:
         n = one(f"SELECT count(*) FROM {t(reg)} WHERE created_by = :by AND (record_name IS NULL OR search_text IS NULL)")
