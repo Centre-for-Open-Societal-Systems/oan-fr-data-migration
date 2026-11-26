@@ -22,7 +22,7 @@ There are three workbooks. **Start with the health report. Open the others when 
 4. Go down **What is not green**. For each row read **What it means** and **What to do**.
 5. Click **Where** to see the number on its own sheet.
 6. If you need to know which farmer, open `migration-report.xlsx`, sheets **Failed households**,
-   **Changed in Gen1** or **Issues**.
+   **Conflicts** or **Issues**.
 
 ## The colours
 
@@ -50,6 +50,9 @@ Amber is not a failure. Many loads end amber: somebody looks at each item and ac
 | Score | The completion score: how much of a farmer's form is filled in. It is not migrated: Gen2 calculates it after the load, because the migration asks it to. |
 | Both IDs | The ID a record has in Gen1 and the ID it has in Gen2. They are saved side by side, so that one can be found from the other. |
 | Recorded reason | When the migration leaves something out it writes down why. The reasons are in migration-report.xlsx, sheet Issues. |
+| Update | A later load writes Gen1's changes over the Gen2 records it loaded before, unless staff have edited the household in Gen2 since. Each value it changed is in migration-report.xlsx, sheet Updated. |
+| Conflict | A household that changed in Gen1 and was also edited by staff in Gen2. The migration does not touch it: a person decides. They are in migration-report.xlsx, sheet Conflicts. |
+| Set inactive | A record that is no longer in Gen1 (archived, deleted, or no longer part of its household) gets the status INACTIVE in Gen2. Nothing is deleted from Gen2. |
 
 ## The health report, sheet by sheet
 
@@ -79,12 +82,12 @@ without a target is a number to know (INFO), and not a check.
 
 | Area | What it is about | Metrics | Checks |
 |---|---|---|---|
-| Reconciliation | Is every Gen1 record accounted for? It counts where each one ended up. | 12 | 18 |
-| Run health | Did the loads finish, what failed, and has Gen2 given out numbers and calculated scores? | 22 | 9 |
+| Reconciliation | Is every Gen1 record accounted for? It counts where each one ended up. | 15 | 30 |
+| Run health | Did the loads finish, what failed, and has Gen2 given out numbers and calculated scores? | 27 | 10 |
 | Quality | Are the values in Gen2 right and complete, and are the records linked correctly? | 27 | 15 |
 | IDs | Can every record be traced back to Gen1, and did the IDs people use come across? | 7 | 11 |
 | By region, source and status | Is one group of farmers worse off than the others? | 1 | none |
-| **Total** | | **69** | **53** |
+| **Total** | | **77** | **66** |
 
 The numbers are always the same. The colours on the Overview add up to the checks. The metrics of each
 area are listed below, all of them, under the names they have in the workbook.
@@ -93,15 +96,16 @@ area are listed below, all of them, under the names they have in the workbook.
 
 Is every Gen1 record accounted for? It counts where each one ended up.
 
-One row for each kind of record. **In each row, columns D to J add up to column C, "In Gen1".** Example,
+One row for each kind of record. **In each row, columns D to L add up to column C, "In Gen1".** Example,
 lands in the example workbook (row 6):
 
-| C: In Gen1 | D: Loaded | E: Failed | F: Not added | G: Left out | H: Out of scope | I: Not reached yet | J: Unexplained | K: Adds up |
-|---|---|---|---|---|---|---|---|---|
-| 360 | 357 | 2 | 0 | 0 | 0 | 0 | **1** | yes |
+| C: In Gen1 | D: Loaded | E: Failed | F: Not added | G: Left out | H: Out of scope | I: Out of scope since, set inactive | J: Out of scope since, still active | K: Not reached yet | L: Unexplained | M: Adds up |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 361 | 356 | 2 | 0 | 0 | 0 | 2 | 0 | 0 | **1** | yes |
 
-Gen1 has 360 lands. 357 are in Gen2. 2 belong to a household that failed to load. 1 should be in Gen2 and
-is not, and nothing says why: this makes the row red.
+Gen1 has 361 lands. 356 are in Gen2. 2 belong to a household that failed to load. 2 were loaded, and their
+farmer was archived in Gen1 afterwards: a later run set them inactive. 1 should be in Gen2 and is not, and
+nothing says why: this makes the row red.
 
 **Where do the reasons come from?** The migration script writes them, by itself, at the moment it leaves
 something out. For example, it can't read the phone number `12ab`: it loads the farmer without it, and
@@ -134,22 +138,32 @@ The rules for out of scope are:
 farmers are migrated too is to be confirmed before production (issue 10); the report follows what the
 migration does.
 
-The other columns: "Should be loaded" is In Gen1 without what is out of scope. "Made for lone farmers" is
-extra: households that Gen2 needs and Gen1 doesn't have.
+**Out of scope since** is for a migration that is run again after the full load (see "After a later
+run" below): records that were loaded, and that Gen1 has since archived or taken out of their household.
+A later run over every farmer sets them inactive in Gen2. Until it has, they are "still active", which is
+red.
+
+The other columns: "Should be loaded" is In Gen1 without what is out of scope, now or since. "Deleted from
+Gen1 since" counts records that were loaded and are now deleted from Gen1 altogether, so they are not
+among Gen1's records in column C. "Made for lone farmers" is extra: households that Gen2 needs and Gen1
+doesn't have.
 
 | Metric | Target | Blocks sign-off | What it means | What to do when it is not green |
 |---|---|---|---|---|
 | In Gen1 | none |  | How many of this kind of record Gen1 has, including archived ones. |  |
 | Loaded | none |  | These records are in Gen2. |  |
 | Failed | none |  | These records are not in Gen2. Something in their household could not be loaded, so nothing of that household was. | See 'Households that failed to load' on the sheet Run health. |
-| Not added | none |  | These records are not in Gen2. They were added to Gen1 after their household was loaded, or their household has changed since. The migration does not add to a household it has already loaded. | Open migration-report.xlsx, sheet Changed in Gen1. Add the record in Gen2 if it is wanted. |
+| Not added | none |  | These records are not in Gen2. They were added to Gen1 after their household was loaded, and no load has updated the household since, or the household is a conflict. | Run migrate with --all again: it adds them. For a conflict, see 'Conflicts not settled' on the sheet Run health. |
 | Left out | none |  | These records are not in Gen2, because of a rule or a problem the migration met, and it wrote down the reason itself. For example, a phone number that cannot be read. | Open migration-report.xlsx, sheet Issues, to see the reason. Accept it, or correct the record in Gen1 before the production load. |
 | Out of scope | none |  | The migration is not meant to take these records. The rules: the farmer is archived in Gen1; the record belongs to an archived farmer; the phone number is disabled; the membership has ended; no active farmer is in the household. Draft, rejected and disabled farmers are not out of scope: they are migrated. |  |
 | Out of scope, by reason | none |  | How many of the out-of-scope records each rule applies to. Listed below the table. |  |
+| Out of scope since, set inactive | none |  | These records were loaded, and are out of scope now: for example, the farmer was archived in Gen1 afterwards. A later load gave them the status INACTIVE in Gen2, or a person decided to keep them as they are. |  |
+| Out of scope since, still active | 0 | **yes** | These records were loaded, and are out of scope now, but are still active in Gen2. | Run migrate with --all: at its end it sets them inactive. If they stay, see 'Conflicts not settled' on the sheet Run health. |
 | Not reached yet | 0 |  | No load has come to these records yet, because the last one stopped early or because they are new in Gen1. | Run migrate again. |
 | Unexplained | 0 | **yes** | These records should be in Gen2 and are not, and nothing says why. They may have been deleted in Gen2, or never loaded. | Find out why before signing off. Start by asking whether anyone deleted records in Gen2. |
 | Loaded, of what should be | 100% |  | How many of the records that should be in Gen2 are there. | Look at the other columns of the same row on the sheet Reconciliation. They show where the rest are. |
-| Loaded, and no longer in Gen1 | none |  | These records are in Gen2, but were deleted from Gen1 after the load. | Nothing, if it was right to delete them. |
+| Deleted from Gen1 since, set inactive | none |  | These records were loaded, and deleted from Gen1 afterwards. A later load gave them the status INACTIVE in Gen2, or a person decided to keep them as they are. |  |
+| Deleted from Gen1 since, still active | 0 | **yes** | These records were loaded, and deleted from Gen1 afterwards, but are still active in Gen2. | Run migrate with --all: at its end it sets them inactive. If they stay, see 'Conflicts not settled' on the sheet Run health. |
 | Made for lone farmers | none |  | In Gen2 every farmer needs a household. The migration makes one for a farmer who has none in Gen1. |  |
 
 ### Run health
@@ -166,12 +180,17 @@ failed.
 | Last run: seconds | none |  | How many seconds the last load took. |  |
 | Last run: farmers loaded | none |  | How many farmers the last load put into Gen2. Farmers already there are not counted. |  |
 | Last run: farmers per minute | none |  | How fast the last load was. |  |
-| Runs by how they ended | none |  | How many loads there have been, and how each ended. COMPLETED: ran to the end. COMPLETED_WITH_FAILURES: ran to the end, with some households left out. STOPPED: someone stopped it. FAILED: it could not go on. INTERRUPTED: it was killed. |  |
+| Runs by how they ended | none |  | How many loads there have been, and how each ended. COMPLETED: ran to the end. COMPLETED_WITH_FAILURES: ran to the end, with some households left out. COMPLETED_WITH_CONFLICTS: ran to the end, and left conflicts for a person to decide. STOPPED: someone stopped it. FAILED: it could not go on. INTERRUPTED: it was killed. |  |
 | Households that failed to load | 0 | **yes** | Something in these households could not be loaded, so nothing of them is in Gen2. | Open migration-report.xlsx, sheet Failed households. Correct the record in Gen1, then run migrate again. |
 | Failed households by kind of error | none |  | How many of the failed households had each kind of error. |  |
 | Failed households by age | none |  | How long ago the failed households first failed. |  |
 | Households left out because a farmer's number is taken | 0 |  | A farmer in this household has a number (FR-...) that another farmer already has in Gen2. | Decide whose number it is, correct the other one, and run migrate again. |
-| Households changed in Gen1 since they were migrated | Reviewed |  | Someone changed these households in Gen1 after they were loaded. Gen2 still has what was loaded. | Open migration-report.xlsx, sheet Changed in Gen1. Make the same change in Gen2. |
+| Households not compared with Gen1 | Reviewed |  | These households are in Gen2, but could not be compared with Gen1: Gen1 could not be read for them, or part of them was in Gen2 from before the migration kept its records. They are not updated. | Open migration-report.xlsx, sheet Not compared. Ask the migration team. |
+| Conflicts not settled | 0 | **yes** | These households changed in Gen1, and staff have also edited them in Gen2 since they were loaded. The migration has not touched them: Gen2 does not show Gen1's change. | Open migration-report.xlsx, sheet Conflicts, and decide for each household. To keep Gen2 as it is, run migrate with --resolve and the household. To write Gen1 over the edits made in Gen2, run migrate with --overwrite and the household. |
+| Values updated from Gen1 since the first load | none |  | How many values later loads wrote over in Gen2, because they changed in Gen1. |  |
+| Values written over edits in Gen2 by a person's decision | none |  | How many values were written over with Gen1's in households staff had edited in Gen2, because a person decided so (migrate --overwrite). The value staff had entered is in migration-report.xlsx, sheet Updated, column Before. |  |
+| Records added to households that were in | none |  | How many records later loads added to households already in Gen2, such as a new phone or land. |  |
+| Records kept in Gen2 by a person's decision | none |  | Records that are no longer in Gen1, which a person decided to keep as they are in Gen2 (migrate --resolve). |  |
 | Farmer numbers copied from Gen1 | none |  | These farmers had a number (FR-...) in Gen1 and have the same one in Gen2. |  |
 | Farmer numbers generated by Gen2 | none |  | These farmers had no number in Gen1. Gen2 has given them one. |  |
 | Farmer numbers waiting | none |  | These farmers are waiting for Gen2 to give them a number. Gen2 shows TEMP-... until then. | Wait, and run health again. If it does not go down, ask the registry team whether the worker is running. |
@@ -265,7 +284,10 @@ The tables above, in the workbook.
 | **Health** | You want the result without another file | Every health metric at the end of a load over every farmer (`--all`). After a run over some farmers it says "Not measured": run `health` instead. What `verify` finds is "not checked" here |
 | **Summary** | You want the figures of this run | Run details; households loaded, failed and left; records per register; issues by kind; fields with data that has nowhere to go in Gen2 |
 | **Failed households** | The health report says households failed | One row per household: its farmers' Gen1 IDs, the kind of error, what it said, how often it was tried |
-| **Changed in Gen1** | The health report says households changed | One row per household: its farmers, and what changed since it was loaded. Gen2 was not touched |
+| **Conflicts** | The health report says conflicts are not settled | One row per household (or per record no longer in Gen1) that changed in Gen1 and was edited in Gen2 too. Gen2 was not touched |
+| **Updated** | You want to know what a later run changed | One row per value written over (`UPDATED`), value written over an edit made in Gen2 because a person ran `--overwrite` (`OVERWRITTEN`: Before is what staff had entered), record added to a household that was in (`ADDED`) or record made active again (`ACTIVE_AGAIN`): the household, the record, the field, the value before and after |
+| **Set inactive** | You want to know what is no longer in Gen1 | One row per record set inactive (`SET_INACTIVE`), or kept as it is by a person's decision (`KEPT`) |
+| **Not compared** | The health report says households were not compared | Households in Gen2 that could not be compared with Gen1. They are not updated |
 | **Issues summary** | You want to know what is most common | Issues grouped by reason, the most frequent first |
 | **Issues** | You want to know what happened to one farmer | One row per issue: see below |
 | **Runs** | You want to know what was run | Every load: when, how it ended, what it loaded, why it stopped |
@@ -291,10 +313,27 @@ The mapping sheets say what the migration covers. They are the same in every run
 | Severity | Meaning | In Gen2? |
 |---|---|---|
 | `failed` | The household could not be loaded | Nothing of it |
-| `changed` | It changed in Gen1 after it was loaded | As it was loaded |
+| `conflict` | It changed in Gen1, and was edited in Gen2 too | As it is in Gen2: not touched |
+| `changed` | It could not be compared with Gen1 | As it was loaded |
 | `skipped` | A record could not be loaded, e.g. a crop without a land | All but that record |
 | `dropped` | A value could not be carried over | All but that value |
 | `check` | Loaded, with something worth a look | Everything |
+
+## After a later run
+
+If Gen1 is still used after the full load, the migration is run again with `--all`. It brings what changed:
+values are written over, new records added, and records that are no longer in Gen1 set inactive. **Gen1's
+change wins, unless staff have edited the household in Gen2 since:** then it is a conflict, and Gen2 is
+not touched.
+
+After such a run, read the reports as after the first load, and also:
+
+| Where | What to look at |
+|---|---|
+| `health-report.xlsx`, sheet Run health | **Conflicts not settled** must be 0 to sign off. "Values updated from Gen1 since the first load" says how much changed |
+| `health-report.xlsx`, sheet Reconciliation | "Out of scope since, still active" and "Deleted from Gen1 since, still active" must be 0 |
+| `migration-report.xlsx`, sheets Updated, Set inactive, Conflicts | Which records, and which values |
+| `verify-report.xlsx`, sheet Checks | "no conflict" and "no household edited in the registry" are warnings, not failures |
 
 ## The verify report, sheet by sheet
 
@@ -319,6 +358,8 @@ The mapping sheets say what the migration covers. They are the same in every run
 | **Numbers waiting** | Wait, then run `health` again |
 | **Numbers failed** | The registry team |
 | **Shared Fayda ID** | Decide which farmer keeps it |
+| **Conflicts not settled** | `migration-report.xlsx`, sheet Conflicts. Look at the household in both systems and decide. To keep Gen2 as it is: `migrate --resolve <household> ...`. To write Gen1 over the edits made in Gen2: `migrate --overwrite <household> ...`. Both take several households at once |
+| **Out of scope since, still active** or **Deleted from Gen1 since, still active** | Run `migrate --all`: at its end it sets them inactive |
 
 ## Looking up one farmer
 
@@ -329,12 +370,14 @@ You need the farmer's Gen1 ID, e.g. 12.
 | Is the farmer in Gen2, and under which ID? | Database: `SELECT gen2_id, household_key FROM migration.migrated_record WHERE kind = 'farmer' AND odoo_id = 12` |
 | Why not? | `migration-report.xlsx`, sheet Failed households: search for 12 in the farmers column |
 | What happened to this farmer's data? | Sheet Issues: filter Household by the household key |
-| Has the farmer changed in Gen1 since? | Sheet Changed in Gen1 |
+| Has a later run changed the farmer? | Sheets Updated and Set inactive: filter Household by the household key |
+| Is the farmer a conflict? | Sheet Conflicts |
 
 ## Good to know
 
 - **`health` changes nothing in the farmer data.** It can be run as often as you like.
-- **`verify` and `health` compare Gen2 with Gen1,** so they are run before staff start to edit Gen2.
+- **`verify` and `health` compare Gen2 with Gen1.** A household staff have edited in Gen2 is not compared:
+  `verify` warns about it, `health` counts it under "Edited in Gen2 since (not compared)".
 - **A dry run measures no health:** nothing was loaded.
 - **The report doesn't judge Gen1's data.** A wrong age that arrives unchanged is a correct migration.
 - **The Issues sheet holds the first 100,000 issues,** open ones first. `issues.csv` holds them all.

@@ -79,7 +79,8 @@ or about another member, and those carry their own Gen1 IDs, not the farmer's.
 | `dropped` | A value was left out: a likely reason for something empty or missing |
 | `skipped` | A record was left out: a likely reason for a missing crop or member |
 | `check` | Migrated, with something worth a look: e.g. who the head is, or a location at a higher level |
-| `changed` | Gen1 changed after the household was migrated: the two are expected to differ. Also in the sheet **Changed in Gen1** |
+| `changed` | The household could not be compared with Gen1, so it was not updated: the two may differ. Also in the sheet **Not compared** |
+| `conflict` | Gen1 changed after the household was migrated, and staff edited it in Gen2 too: the two are expected to differ. Also in the sheet **Conflicts** |
 | `failed` | The household isn't in Gen2, so it can't be in the sample. Also in the sheet **Failed households** |
 
 Example (made up), filtered to `solo-12`:

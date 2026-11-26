@@ -83,6 +83,27 @@ def _status_table(entries, key, statuses, value_key):
     return [(s, count[s], with_data[s]) for s in statuses if count[s] or s in statuses]
 
 
+HOUSEHOLD_STATUSES = [
+    ("LOADED", "in, as farmer profile has it"),
+    ("FAILED", "not in: see the sheet Failed households"),
+    ("CONFLICT", "changed in farmer profile and edited in the registry: not touched (sheet Conflicts)"),
+    ("CHANGED", "in, but could not be compared with farmer profile (sheet Not compared)"),
+    ("REMOVED", "no longer in farmer profile: its records are inactive (sheet Set inactive)")]
+CHANGE_ACTIONS = [
+    ("UPDATED", "a value written over with farmer profile's"),
+    ("OVERWRITTEN", "a value written over with farmer profile's although the registry had edited the household: "
+                    "a person decided so (migrate --overwrite). Before: the registry's value"),
+    ("ADDED", "a record added to a household that was in"),
+    ("ACTIVE_AGAIN", "a record that is back in farmer profile, made active again"),
+    ("SET_INACTIVE", "a record farmer profile no longer has, set inactive"),
+    ("KEPT", "a record farmer profile no longer has, kept as it is by a person's decision")]
+
+
+def _change(c):
+    return (c["run_id"], c["household_key"], c["action"], c["kind"], c["odoo_id"], c["gen2_id"], c["field"],
+            c["old_value"], c["new_value"])
+
+
 def migration_workbook(path, run: dict, source_fields: list, target_cols: list, issues: list, issue_counts, batches: list):
     """What happened first; the mapping, which says what the migration covers, last.
     issues: the first rows; issue_counts: (severity, record, field, reason) -> count of the open ones, over all of them."""
@@ -99,16 +120,21 @@ def migration_workbook(path, run: dict, source_fields: list, target_cols: list, 
     rows += [(k, v) for k, v in run["households"].items() if isinstance(v, int)]
     if run["overall"]:
         rows += [None, ("Households, over all runs",), ("Status", "Households", "Farmers")]
-        rows += [(s, *run["overall"]["households"].get(s, (0, 0))) for s in ("LOADED", "FAILED", "CHANGED")]
-    rows += [None, ("Records",), ("Gen2 register", "Rows read", "Added", "Already there")]
-    rows += [(t, c["rows"], c["added"], c["already there"]) for t, c in run["counts"].items()]
+        rows += [(s, *run["overall"]["households"].get(s, (0, 0)), meaning) for s, meaning in HOUSEHOLD_STATUSES]
+    rows += [None, ("Records",), ("Gen2 register", "Rows read", "Added", "Already there", "Updated")]
+    rows += [(t, c["rows"], c["added"], c["already there"], c.get("updated", 0)) for t, c in run["counts"].items()]
+    changes = run.get("changes_counted") or {}
+    if changes:
+        rows += [None, ("Changes to records that were in, in this run",), ("Action", "Count", "Meaning")]
+        rows += [(a, changes.get(a, 0), meaning) for a, meaning in CHANGE_ACTIONS]
     rows += [None, ("Open issues, over all runs" if run["overall"] else "Issues",), ("Severity", "Count", "Meaning")]
     by_severity = collections.Counter()
     for (severity, *_), n in issue_counts.items():
         by_severity[severity] += n
     rows += [(s, by_severity[s], meaning) for s, meaning in (
         ("failed", "the household is left out; fix it and run again"),
-        ("changed", "changed in farmer profile since it was migrated; not touched"),
+        ("conflict", "changed in farmer profile, and edited in the registry: not touched (sheet Conflicts)"),
+        ("changed", "in, but farmer profile cannot be compared with it: not touched"),
         ("skipped", "a record that is not migrated"), ("dropped", "a value that is left out"),
         ("check", "migrated, worth a look"))]
     rows += [None, ("Generated after the load",), ("What", "Where", "Queued now")]
@@ -131,7 +157,18 @@ def migration_workbook(path, run: dict, source_fields: list, target_cols: list, 
     _sheet(wb, "Failed households", ["Household", "Farmers (Odoo ids)", "Error", "What it said", "Attempts", "Last run"],
            [(h["household_key"], h["farmer_ids"], h["error_class"], h["error"], h["attempts"], h["last_run_id"])
             for h in run["failed"][:MAX_DETAIL_ROWS]], widths=[22, 30, 24, 90, 10, 26])
-    _sheet(wb, "Changed in Gen1", ["Household", "Farmers (Odoo ids)", "What changed", "Migrated by", "Last seen by"],
+    _sheet(wb, "Conflicts", ["Household", "Record", "Odoo id", "Registry id", "What", "First run", "Last run"],
+           [(c["household_key"], c["entity"], c["odoo_id"], c["gen2_id"], c["reason"], c["first_run_id"],
+             c["last_run_id"]) for c in run.get("conflicts", [])[:MAX_DETAIL_ROWS]], widths=[22, 16, 12, 38, 90, 26, 26])
+    change_header = ["Run", "Household", "Action", "Record", "Odoo id", "Registry id", "Field", "Before", "After"]
+    change_widths = [26, 22, 14, 16, 12, 38, 30, 40, 40]
+    _sheet(wb, "Updated", change_header,
+           [_change(c) for c in run.get("changes", []) if c["action"] in ("UPDATED", "OVERWRITTEN", "ADDED", "ACTIVE_AGAIN")][
+               :MAX_DETAIL_ROWS], widths=change_widths)
+    _sheet(wb, "Set inactive", change_header,
+           [_change(c) for c in run.get("changes", []) if c["action"] in ("SET_INACTIVE", "KEPT")][:MAX_DETAIL_ROWS],
+           widths=change_widths)
+    _sheet(wb, "Not compared", ["Household", "Farmers (Odoo ids)", "Why", "Migrated by", "Last seen by"],
            [(h["household_key"], h["farmer_ids"], h["what"], h["first_run_id"], h["last_run_id"])
             for h in run["changed"][:MAX_DETAIL_ROWS]], widths=[22, 30, 90, 26, 26])
     _sheet(wb, "Issues summary", ["Severity", "Record", "Field", "Reason", "Count"],

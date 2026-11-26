@@ -24,7 +24,7 @@ import psycopg2
 from sqlalchemy import text
 
 from . import fieldmap as F
-from . import source
+from . import source, tracking
 from .load import copy_data
 from .transform import LARGE_PARCEL_HA, record_id
 
@@ -42,6 +42,8 @@ GROUPS = {"loaded": "Loaded", "failed": "Failed",
           "not_added": "Not added",
           "left_out": "Left out",
           "out_of_scope": "Out of scope",
+          "removed": "Out of scope since, set inactive",
+          "still_active": "Out of scope since, still active",
           "not_reached": "Not reached yet", "unexplained": "Unexplained"}
 # Why a record is out of scope: when it belongs to nobody in scope, and when it is ruled out itself.
 # Draft, rejected and disabled farmers are in scope: they are migrated. Who is in scope is what
@@ -196,8 +198,7 @@ class Health:
         return f"{alias}.internal_record_id IN (SELECT gen2_id FROM migration.migrated_record)"
 
     def edited(self, kind, alias):
-        return (f"EXISTS (SELECT 1 FROM {self.history[kind]} e WHERE e.internal_record_id = {alias}.internal_record_id "
-                "AND e.history_record_id NOT IN (SELECT gen2_id FROM migration.migrated_record))")
+        return tracking.edited_sql(self.history[kind], alias)
 
     def zero(self, area, metric, count, total=None, blocking=False, bad=None, **kw):
         """A metric that should be 0."""
@@ -296,10 +297,12 @@ class Health:
             self.cur.execute(f"""
                 INSERT INTO h_class
                 SELECT g.kind, g.odoo_id, g.farmer_id, h.key, CASE
-                  WHEN m.odoo_id IS NOT NULL THEN CASE WHEN r.internal_record_id IS NOT NULL THEN 'loaded' ELSE 'unexplained' END
+                  WHEN m.odoo_id IS NOT NULL THEN CASE WHEN r.internal_record_id IS NULL THEN 'unexplained'
+                    WHEN m.removed_run_id IS NOT NULL THEN 'removed'
+                    WHEN g.ruled_out OR h.key IS NULL THEN 'still_active' ELSE 'loaded' END
                   WHEN g.ruled_out OR h.key IS NULL THEN 'out_of_scope'
                   WHEN p.status = 'FAILED' THEN 'failed'
-                  WHEN p.status = 'CHANGED' THEN 'not_added'
+                  WHEN p.status IN ('CHANGED', 'CONFLICT') THEN 'not_added'
                   WHEN p.status IS NULL THEN CASE WHEN o.key IS NULL THEN 'not_reached' ELSE 'not_added' END
                   WHEN EXISTS (SELECT 1 FROM migration.issue i WHERE i.household_key = h.key
                                 AND i.severity IN ('skipped', 'dropped') AND i.entity = %s AND i.odoo_id = {named}::text)
@@ -319,17 +322,20 @@ class Health:
             total, mine = sum(counts[kind].values()), counts[kind]
             self.add(RECONCILIATION, "In Gen1", total, record_type=kind)
             for grp, label in GROUPS.items():
-                if grp == "unexplained":
+                if grp in ("unexplained", "still_active"):
                     self.zero(RECONCILIATION, label, mine[grp], total, blocking=True, record_type=kind)
                 elif grp == "not_reached":
                     self.zero(RECONCILIATION, label, mine[grp], total, record_type=kind)
                 else:
                     self.add(RECONCILIATION, label, mine[grp], total, record_type=kind)
-            in_scope = total - mine["out_of_scope"]
+            in_scope = total - mine["out_of_scope"] - mine["removed"] - mine["still_active"]
             self.all_of(RECONCILIATION, "Loaded, of what should be", mine["loaded"], in_scope, record_type=kind)
-            gone = self.one("SELECT count(*) FROM migration.migrated_record m WHERE m.kind = %s AND NOT EXISTS "
-                            "(SELECT 1 FROM h_gen1 g WHERE g.kind = m.kind AND g.odoo_id = m.odoo_id)", (kind,))
-            self.add(RECONCILIATION, "Loaded, and no longer in Gen1", gone, record_type=kind)
+            gone = dict(self.rows("SELECT m.removed_run_id IS NOT NULL, count(*) FROM migration.migrated_record m "
+                                  "WHERE m.kind = %s AND NOT EXISTS (SELECT 1 FROM h_gen1 g WHERE g.kind = m.kind "
+                                  "AND g.odoo_id = m.odoo_id) GROUP BY 1", (kind,)))
+            self.add(RECONCILIATION, "Deleted from Gen1 since, set inactive", gone.get(True, 0), record_type=kind)
+            self.zero(RECONCILIATION, "Deleted from Gen1 since, still active", gone.get(False, 0), blocking=True,
+                      record_type=kind)
             made = self.one("SELECT count(*) FROM migration.migrated_record WHERE kind = %s", (f"solo_{kind}",))
             self.add(RECONCILIATION, MADE, made, record_type=kind)
         for kind, why, n in self.rows("SELECT kind, why, count(*) FROM h_class WHERE grp = 'out_of_scope' GROUP BY 1, 2 "
@@ -369,7 +375,7 @@ class Health:
                         "counts FROM migration.run WHERE mode <> 'finalize' ORDER BY started_at DESC LIMIT 1")
         status = self.status or (run[0][1] if run else None)
         self.run_id = run[0][0] if run else None
-        done = status in ("COMPLETED", "COMPLETED_WITH_FAILURES")
+        done = status in ("COMPLETED", "COMPLETED_WITH_FAILURES", "COMPLETED_WITH_CONFLICTS")
         self.add(RUNS, "Last run completed", int(done), 1, GREEN if done else RED, target="Yes", blocking=True)
         if run:
             seconds = int(run[0][2])
@@ -397,8 +403,16 @@ class Health:
                          "AND error_class = 'UniqueViolation' AND error LIKE %s", ("%functional_record_id%",))
         self.zero(RUNS, "Households left out because a farmer's number is taken", taken, record_type="household")
         changed = self.one("SELECT count(*) FROM migration.household_progress WHERE status = 'CHANGED'")
-        self.add(RUNS, "Households changed in Gen1 since they were migrated", changed, None,
+        self.add(RUNS, "Households not compared with Gen1", changed, None,
                  AMBER if changed else GREEN, target="Reviewed", record_type="household")
+        conflicts = self.one("SELECT count(DISTINCT household_key) FROM migration.issue "
+                             "WHERE status = 'OPEN' AND severity = 'conflict'")
+        self.zero(RUNS, "Conflicts not settled", conflicts, blocking=True, record_type="household")
+        for action, metric in (("UPDATED", "Values updated from Gen1 since the first load"),
+                               ("OVERWRITTEN", "Values written over edits in Gen2 by a person's decision"),
+                               ("ADDED", "Records added to households that were in"),
+                               ("KEPT", "Records kept in Gen2 by a person's decision")):
+            self.add(RUNS, metric, self.one("SELECT count(*) FROM migration.change WHERE action = %s", (action,)))
         self.numbers("farmer")
         self.numbers("household")
         scores = dict(self.rows("SELECT q.compute_status, count(*) FROM g2p_completion_score_computation_queue q "
@@ -507,7 +521,7 @@ class Health:
                 SELECT m.odoo_id, m.gen2_id FROM migration.migrated_record m
                   JOIN {self.tables[kind]} r ON r.internal_record_id = m.gen2_id AND NOT {self.edited(kind, 'r')}
                   JOIN migration.household_progress p ON p.household_key = m.household_key AND p.status = 'LOADED'
-                 WHERE m.kind = %s""", (kind,))
+                 WHERE m.kind = %s AND m.removed_run_id IS NULL""", (kind,))
             left = [_count_expr(name, have[(table, name)]) for name, _ in pairs]
             right = [f"count(nullif(nullif(nullif(nullif(btrim(x.\"{c}\"::text), ''), 'null'), '[]'), '{{}}'))" for _, c in pairs]
             for i in range(0, len(rows), 20000):

@@ -12,16 +12,23 @@ loads the finished rows (COPY, then INSERT ... ON CONFLICT DO NOTHING).
   python migrate.py --all --sql-out           write migration.sql instead: review it, then run it
                                               with psql -v ON_ERROR_STOP=1 -f migration.sql <registry db>
   python migrate.py --status                  how far the migration is, and what is open
+  python migrate.py --resolve household-12 solo-40     conflicts settled: keep the registry as it is
+  python migrate.py --overwrite household-12 solo-40   conflicts settled: farmer profile over the registry's edits
 
 The household (or a farmer in none) is migrated whole or not at all. One that
 fails is recorded and left out, and the rest go on. Progress and issues are
 kept in the registry's database (schema "migration"), in the transaction that
 writes the records: run the same command again to go on after a stop, a crash
-or a fix, and what is already in is skipped. A household that has changed in
-farmer profile since it was migrated is reported, not touched.
+or a fix, and what is already in is skipped.
 
-Exit codes: 0 everything loaded; 3 finished, with households that failed;
-1 stopped before the end (run the same command again).
+Run again later, it brings what changed in farmer profile since: a household
+that changed is updated in the registry (values written over, records added),
+unless the registry has edited it since, which is a conflict and not touched.
+At the end of an --all run, what farmer profile no longer has is set INACTIVE,
+never deleted. Every change is recorded in migration.change.
+
+Exit codes: 0 everything loaded; 3 finished, with households that failed or
+conflicts; 1 stopped before the end (run the same command again).
 
 At the end the run queues the functional ids and completion scores the
 registry generates, and writes its folder under --report: the log,
@@ -78,6 +85,10 @@ def parse_args(argv):
     which.add_argument("--ids", nargs="+", type=int, help="these Odoo partner ids")
     which.add_argument("--finalize-only", action="store_true", help="only queue what is generated after the load")
     which.add_argument("--status", action="store_true", help="show how far the migration is and what is open")
+    which.add_argument("--resolve", nargs="+", metavar="HOUSEHOLD",
+                       help="conflicts settled: keep the registry as it is for these households")
+    which.add_argument("--overwrite", nargs="+", metavar="HOUSEHOLD",
+                       help="conflicts settled: write farmer profile over the registry's edits of these households")
     parser.add_argument("--complete", action="store_true", help="with --limit: only farmers with a household, land and crop")
     parser.add_argument("--batch-size", type=int, default=500,
                         help="farmers per transaction, whole households (default 500)")
@@ -132,7 +143,8 @@ def _worker_init(parent):
 
 
 def _unit_outcome(unit, plan, data, error) -> dict:
-    """What became of one unit: "do" is load, same, reverted, changed, incomparable or failed."""
+    """What becomes of one unit: "do" is load, update, same, reverted, changed, incomparable or failed.
+    update: it is in, and changed in farmer profile since (its values, or which records it has)."""
     from farmer_profile import load, source, tracking
     out = {"unit": unit, "issues": [], "fingerprint": None}
 
@@ -145,17 +157,17 @@ def _unit_outcome(unit, plan, data, error) -> dict:
             return {**out, "do": "changed", "what": f"cannot be read from farmer profile any more ({error}): not touched"}
         return failed(error)
     out["fingerprint"] = now = source.fingerprint(data)
+    forced = unit.key in _WORKER.get("force", ()) or bool(set(plan.get("owners", ())) & _WORKER.get("force", set()))
+    do, what = "load", ""
     if plan["do"] == "recomposed":
-        return {**out, "do": "changed", "what": "its members changed in farmer profile since it was migrated "
-                f"(migrated with {', '.join(plan['owners'])}): not touched"}
-    if plan["do"] == "compare":
+        do, what = "update", f"its members changed (it was {', '.join(plan['owners'])})"
+    elif plan["do"] == "compare":
         if plan["version"] != source.FINGERPRINT_VERSION:
             return {**out, "do": "incomparable"}
         parts = source.changed_parts(plan["fingerprint"], now)
-        if parts:
-            return {**out, "do": "changed",
-                    "what": f"changed in farmer profile since it was migrated ({', '.join(parts)}): not touched"}
-        return {**out, "do": "reverted" if plan["status"] == "CHANGED" else "same"}
+        if not parts and not forced:
+            return {**out, "do": "reverted" if plan["status"] in ("CHANGED", "CONFLICT") else "same"}
+        do, what = "update", ", ".join(parts) or "as it is in farmer profile"
     try:
         result = _WORKER["transformer"](data)
         prepared = load.prepare(result)
@@ -164,7 +176,8 @@ def _unit_outcome(unit, plan, data, error) -> dict:
     except Exception as exc:
         return failed(exc, traceback.format_exc())
     gen2_ids = {i for table, _ in prepared.items() for i in prepared.ids(table)}
-    return {**out, "do": "load", "prepared": prepared, "records": tracking.links(unit, data, gen2_ids),
+    return {**out, "do": do, "what": what, "owners": sorted({*plan.get("owners", ()), unit.key}), "forced": forced,
+            "prepared": prepared, "records": tracking.links(unit, data, gen2_ids),
             "issues": [dataclasses.asdict(i) for i in result.issues]}
 
 
@@ -354,6 +367,90 @@ class Loader:
 
         return load.write(self.engine, prepared, before=before, after=after)
 
+    def update(self, outcomes) -> tuple[dict, list]:
+        """Units that are in, and changed in farmer profile: (what was written per table, the
+        outcomes that went in, updated or found in conflict). One that could not is marked failed."""
+        if not outcomes:
+            return {}, []
+        try:
+            return _retrying("the batch could not be written", self.log, lambda: self._update(outcomes)), list(outcomes)
+        except _DATA_ERRORS as exc:
+            if len(outcomes) == 1:
+                outcomes[0].update(do="failed", error_class=type(exc).__name__, error=str(exc).strip(), trace="")
+                return {}, []
+        for o in outcomes:  # a conflict found in the failed attempt is looked for again
+            if o["do"] == "conflict":
+                o["do"] = "update"
+        middle = len(outcomes) // 2
+        counts, done = self.update(outcomes[:middle])
+        more, also = self.update(outcomes[middle:])
+        for table, c in more.items():
+            mine = counts.setdefault(table, dict.fromkeys(c, 0))
+            for k in c:
+                mine[k] += c[k]
+        return counts, done + also
+
+    def _update(self, outcomes):
+        from farmer_profile import delta, finalize, load, tracking
+        models = importlib.import_module("openg2p_registry_extensions.register_domain.models")
+        if self.tracked and tracking.loaded_by(self.engine, self.run_id, [o["unit"].key for o in outcomes]):
+            return {}  # a commit whose answer was lost: it is in
+        going = []
+
+        def work(cur, _counts):
+            """In the transaction load.write opens and commits (or rolls back, in a dry run)."""
+            going.clear()
+            if self.tracked:
+                tracking.fence(cur, self.run_id)
+            previous = {o["unit"].key: tracking.records_of_households(cur, o["owners"]) for o in outcomes}
+            produced = {o["unit"].key: {r[2] for r in o["records"]} for o in outcomes}
+            before = {r[2] for rs in previous.values() for r in rs}
+            delta.lock(cur, models, before | set().union(*produced.values()))
+            edited = tracking.edited(cur, models, before)
+            batch = tracking.Batch()
+            for o in outcomes:
+                touched = edited & {r[2] for r in previous[o["unit"].key]}
+                if touched and not o.get("forced"):
+                    o.update(do="conflict", what=f"changed in farmer profile ({o['what']}), and the registry has edited "
+                                                 f"{len(touched)} of its records since: not touched")
+                    batch.conflict(o["unit"], o["fingerprint"], o["what"])
+                else:
+                    going.append(o)
+            changes = delta.write(cur, load.merge(o["prepared"] for o in going)) if going else []
+            known = {r[2]: (r[0], r[1]) for rs in previous.values() for r in rs}
+            known.update({r[2]: (r[0], r[1]) for o in going for r in o["records"]})
+            owner = {i: o["unit"].key for o in going for i in produced[o["unit"].key]}
+            by_unit = collections.defaultdict(list)
+            forced = {o["unit"].key for o in going if o.get("forced")}
+            for action, gen2_id, field, old, new in changes:
+                kind, odoo_id = known.get(gen2_id, ("", None))
+                if action == "UPDATED" and owner[gen2_id] in forced:
+                    action = "OVERWRITTEN"  # a value the registry may have had from a person
+                by_unit[owner[gen2_id]].append((action, kind, odoo_id, gen2_id, field, old, new))
+            for o in going:
+                key = o["unit"].key
+                o["changes"] = by_unit[key]
+                batch.updated(o["unit"], o["fingerprint"], o["issues"], o["records"],
+                              {r[2] for r in previous[key]} - produced[key], by_unit[key])
+            finalize.requeue_scores(cur, models, {c[3] for o in going for c in o["changes"] if c[1] == "farmer"})
+            if self.tracked:
+                tracking.apply(cur, self.run_id, batch)
+                tracking.accept_edits(cur, {k for o in going if o.get("forced") for k in o["owners"]})
+
+        load.write(self.engine, load.Prepared(), dry_run=self.dry_run, after=work)
+        counts = {}
+        for o in going:
+            added = {c[3] for c in o["changes"] if c[0] == "ADDED"}
+            changed = {c[3] for c in o["changes"] if c[0] != "ADDED"}
+            for table, (_, rows) in o["prepared"].items():
+                ids = set(o["prepared"].ids(table))
+                c = counts.setdefault(table, {"rows": 0, "added": 0, "already there": 0, "updated": 0})
+                c["rows"] += len(rows)
+                c["added"] += len(ids & added)
+                c["already there"] += len(ids - added)
+                c["updated"] += len(ids & changed)
+        return counts
+
     def record(self, outcomes):
         """Progress and issues of the units that were not written."""
         from farmer_profile import tracking
@@ -363,6 +460,8 @@ class Loader:
                 batch.failed(o["unit"], o["error_class"], o["error"], o["issues"])
             elif o["do"] == "changed":
                 batch.changed(o["unit"], o["fingerprint"], o["what"])
+            elif o["do"] == "conflict" and not self.tracked:
+                pass  # a dry run: nothing is recorded
             elif o["do"] == "reverted":
                 batch.unchanged_again(o["unit"], o["fingerprint"])
             elif o["do"] == "adopt":
@@ -408,8 +507,8 @@ def _raw_issue_rows(outcome):
     if outcome["do"] == "failed":
         yield {**base, "household": unit.key, "severity": "failed", "entity": "household", "odoo_id": farmers,
                "field": outcome["error_class"], "value": unit.key, "reason": outcome["error"]}
-    if outcome["do"] == "changed":
-        yield {**base, "household": unit.key, "severity": "changed", "entity": "household", "odoo_id": farmers,
+    if outcome["do"] in ("changed", "conflict"):
+        yield {**base, "household": unit.key, "severity": outcome["do"], "entity": "household", "odoo_id": farmers,
                "field": "", "value": unit.key, "reason": outcome["what"]}
         return
     for i in outcome["issues"]:
@@ -436,6 +535,9 @@ class Run:
         self.households = collections.Counter()  # what became of the units
         self.totals = collections.OrderedDict()
         self.batches, self.failed = [], []       # failed: the outcomes
+        self.conflicts = []                      # household keys: changed in both
+        self.changes = collections.Counter()     # action -> records, in records that were in
+        self.removal = None                      # what the end of an --all run set inactive
         self.issues, self.issue_counts = [], collections.Counter()
         self.covered = set()
         self.written = {}         # what the batches wrote (or would have): for the report
@@ -456,7 +558,10 @@ class Run:
             self.check_source()
             if args.finalize_only:
                 return
-            chosen = source.select_farmers(conn, None if args.all else args.limit, args.ids, args.complete)
+            if args.overwrite:
+                chosen = self.overwrite_selection()
+            else:
+                chosen = source.select_farmers(conn, None if args.all else args.limit, args.ids, args.complete)
             self.planned, self.not_people = source.units(conn, chosen)
         finally:
             conn.close()
@@ -474,10 +579,27 @@ class Run:
             self.log.warning("%d units have more than %d farmers, migrated all or none (e.g. %s, %d farmers): check "
                              "their memberships", len(large), LARGE_UNIT, large[0].key, len(large[0].farmers))
 
+    def overwrite_selection(self) -> list:
+        """--overwrite: the farmers of these households, as the migration last had them."""
+        from farmer_profile import tracking
+        if self.args.sql_out:
+            raise Fatal("--overwrite writes over the registry: it cannot be written to migration.sql")
+        if not tracking.exists(self.engine) or not tracking.current(self.engine):
+            raise Fatal("there is nothing to overwrite: the migration's tables are missing or from an earlier version")
+        found = tracking.farmers_of(self.engine, self.args.overwrite)
+        unknown = [k for k in self.args.overwrite if k not in found]
+        if unknown:
+            raise Fatal(f"no such household in the migration's tables: {', '.join(unknown)} (see the sheet Conflicts)")
+        _WORKER["force"] = set(self.args.overwrite)
+        return sorted({f for farmers in found.values() for f in farmers})
+
     def check_source(self):
         from farmer_profile import tracking
         if not tracking.exists(self.engine):
             return
+        if not self.writes and not tracking.current(self.engine):
+            raise Fatal("the migration's tables are from an earlier version: run once without --dry-run and "
+                        f"--sql-out, or have a DBA run {tracking.SCHEMA_SQL.name}, to bring them up to date")
         known = tracking.other_sources(self.engine, self.source_uuid)
         if known and self.args.accept_source != (self.source_uuid or ""):
             raise Fatal(f"this registry was migrated from another farmer profile database (its database.uuid is "
@@ -547,6 +669,10 @@ class Run:
         outcomes = outcome["units"]
         loader.sort_out(outcomes)
         to_load = [o for o in outcomes if o["do"] == "load"]
+        to_update = [o for o in outcomes if o["do"] == "update"]
+        if self.sql_file and to_update:
+            raise Fatal(f"household {to_update[0]['unit'].key} changed in farmer profile since it was migrated: "
+                        "migration.sql only adds records. Run without --sql-out to update the registry")
         if self.sql_file:
             loaded = to_load
             prepared = load.merge(o["prepared"] for o in loaded)
@@ -557,7 +683,13 @@ class Run:
             self.sql_file.add(prepared, rest)
         else:
             counts, loaded = loader.load(to_load)
-            loader.record([o for o in outcomes if o["do"] not in ("load", "same", "incomparable")])
+            more, updated = loader.update(to_update)
+            for table, c in more.items():
+                mine = counts.setdefault(table, {"rows": 0, "added": 0, "already there": 0})
+                for k in c:
+                    mine[k] = mine.get(k, 0) + c[k]
+            loaded += [o for o in updated if o["do"] == "update"]
+            loader.record([o for o in outcomes if o["do"] not in ("load", "update", "conflict", "same", "incomparable")])
         inventory.count_written(self.written, load.merge(o["prepared"] for o in loaded))
         for table, c in counts.items():
             mine = self.totals.setdefault(table, dict.fromkeys(c, 0))
@@ -572,6 +704,11 @@ class Run:
                 # the workbook shows the first rows; issues.csv has them all
                 if len(self.issues) < report.MAX_DETAIL_ROWS or row["severity"] == "changed":
                     self.issues.append(row)
+            if o["do"] == "conflict":
+                self.conflicts.append(o["unit"].key)
+                self.log.warning("household %s: %s", o["unit"].key, o["what"])
+            for c in o.get("changes", ()):
+                self.changes[c[0]] += 1
             if o["do"] == "failed":
                 self.failed.append(o)
                 self.log.error("household %s (farmers %s) failed and was left out: %s: %s%s", o["unit"].key,
@@ -579,6 +716,7 @@ class Run:
                                "\n" + o["trace"] if o["trace"] else "")
             o.pop("prepared", None)
             o.pop("records", None)
+            o.pop("changes", None)
         done = collections.Counter(o["do"] for o in outcomes)
         added = ", ".join(f"{t.replace('g2p_register_', '')} {c['added']}" for t, c in counts.items()) or "nothing"
         result = ", ".join(f"{n} {_WORDS[k]}" for k, n in done.items())
@@ -590,6 +728,69 @@ class Run:
         self.log.info("batch %d/%d: %d households, %d farmers (%s..%s), prepared in %.1fs, loaded in %.1fs: %s; added %s",
                       b, self.n_batches, len(work), len(farmers), work[0][0].key, work[-1][0].key, outcome["seconds"],
                       time.monotonic() - t0, result, added)
+
+    def remove(self):
+        """After a run over every farmer: what farmer profile no longer has is set INACTIVE, a
+        household at a time, unless the registry has edited that household (a conflict)."""
+        from farmer_profile import delta, tracking
+        models = importlib.import_module("openg2p_registry_extensions.register_domain.models")
+        planned = {u.key for u in self.planned}
+        force = set(self.args.overwrite or ())
+        only = sorted(force | planned) if force else None  # --overwrite: those households' farmers were all looked at
+        stale = _retrying("the migration's records could not be read", self.log,
+                          lambda: tracking.stale(self.engine, planned, only))
+        self.removal = {"households": len(stale), "records": sum(map(len, stale.values())), "set inactive": 0,
+                        "conflicts": 0}
+        if not stale:
+            return
+        if self.sql_file:
+            raise Fatal(f"{self.removal['records']} migrated records are no longer in farmer profile (household "
+                        f"{next(iter(stale))}): migration.sql only adds records. Run without --sql-out to set them inactive")
+        self.log.info("%d records of %d households are no longer in farmer profile: setting them inactive",
+                      self.removal["records"], len(stale))
+
+        def once(key, records):
+            raw = self.engine.raw_connection()
+            try:
+                cur = raw.cursor()
+                if self.tracked:
+                    tracking.fence(cur, self.run_id)
+                ids = {r[2] for r in records}
+                household = {r[2] for r in tracking.records_of_households(cur, [key])}
+                delta.lock(cur, models, ids | household)
+                edited = set() if key in force else tracking.edited(cur, models, ids | household)
+                if edited:
+                    tracking.removal_conflict(cur, self.run_id, key, records, edited)
+                    inactive = None
+                else:
+                    inactive = delta.set_inactive(cur, models, records)
+                    tracking.removed(cur, self.run_id, key, records, inactive, key in planned)
+                    if key in force:
+                        tracking.accept_edits(cur, [key])
+                raw.commit() if self.writes else raw.rollback()
+                return inactive
+            except Exception:
+                with contextlib.suppress(Exception):
+                    raw.rollback()
+                raise
+            finally:
+                with contextlib.suppress(Exception):
+                    raw.close()
+
+        for key, records in stale.items():
+            if self.stop["asked"]:
+                raise Stopped
+            inactive = _retrying(f"household {key} could not be set inactive", self.log, lambda: once(key, records))
+            if inactive is None:
+                self.removal["conflicts"] += 1
+                self.conflicts.append(key)
+                self.log.warning("household %s: %d records are no longer in farmer profile, and the registry has edited "
+                                 "the household: not set inactive", key, len(records))
+            else:
+                self.removal["set inactive"] += len(inactive)
+                self.changes["SET_INACTIVE"] += len(inactive)
+        if self.writes:
+            tracking.no_longer_stale(self.engine, [r[2] for rs in stale.values() for r in rs])
 
     def finalize(self, complete):
         from farmer_profile import finalize, tracking
@@ -635,10 +836,13 @@ class Run:
                         self.tracked = True
                     if not self.args.finalize_only:
                         self.migrate()
+                        if (self.args.all or self.args.overwrite) and tracking.exists(self.engine):
+                            self.remove()
                         if self.tracked and self.args.all:
                             tracking.retire(self.engine, [u.key for u in self.planned])
                     self.finalize(True)
-                    status = "COMPLETED_WITH_FAILURES" if self.failed else "COMPLETED"
+                    status = "COMPLETED_WITH_FAILURES" if self.failed else \
+                        "COMPLETED_WITH_CONFLICTS" if self.conflicts else "COMPLETED"
                 except Stopped:
                     status, self.error = "STOPPED", "asked to stop"
                 except (Fatal, tracking.NotOurRun) as exc:
@@ -682,6 +886,11 @@ class Run:
         if self.failed:
             self.log.error("%d households failed and were left out: fix them and run the same command again",
                            len(self.failed))
+        if self.conflicts:
+            self.log.error("%d households changed in farmer profile and were edited in the registry: they were not "
+                           "touched. See the sheet Conflicts; when settled, migrate.py --resolve <household>",
+                           len(self.conflicts))
+        if self.failed or self.conflicts:
             return SOME_FAILED
         self.log.info("done")
         return OK
@@ -701,6 +910,10 @@ class Run:
         out = {"planned": len(self.planned), **{_WORDS[k]: n for k, n in self.households.items()}}
         out["remaining"] = len(self.planned) - sum(self.households.values())
         out["records added"] = {t: c["added"] for t, c in self.totals.items()}
+        if self.changes:
+            out["changes"] = dict(self.changes)
+        if self.removal:
+            out["no longer in farmer profile"] = self.removal
         return out
 
     def reports(self, status):
@@ -733,11 +946,11 @@ class Run:
                    "error": o["error"], "attempts": 1, "first_run_id": "", "last_run_id": ""} for o in self.failed]
         changed = [{"household_key": i["household"], "farmer_ids": i["odoo_id"], "what": i["reason"], "first_run_id": "",
                     "last_run_id": ""} for i in self.issues if i["severity"] == "changed"]
-        runs, overall = [], None
+        runs, overall, conflicts, changes = [], None, [], []
         if self.tracked:
             got = attempt("the migration's tables", lambda: self.read_tables(tracking, report), None)
             if got:
-                issues, issue_counts, failed, changed, runs, overall = got
+                issues, issue_counts, failed, changed, runs, overall, conflicts, changes = got
                 for r in runs:  # its end is recorded after the reports
                     if r["run_id"] == self.run_id:
                         r.update(status=status, counts=self.counts(), error=self.error)
@@ -761,7 +974,8 @@ class Run:
         if self.error:
             info["Stopped"] = self.error
         data = {"info": info, "counts": self.totals, "after_load": self.after_load, "households": counts,
-                "overall": overall, "failed": failed, "changed": changed, "runs": runs,
+                "overall": overall, "failed": failed, "changed": changed, "runs": runs, "conflicts": conflicts,
+                "changes": changes, "changes_counted": dict(self.changes),
                 "health": self.health, "no_health": self.no_health}
         attempt("the workbook's data", lambda: report.migration_workbook(
             self.run_dir / "migration-report.xlsx", data, fields, columns, issues, issue_counts, self.batches), None)
@@ -800,11 +1014,34 @@ class Run:
                     counts[(row["severity"], row["entity"], row["field"], row["reason"])] += 1
         os.replace(path.with_suffix(".tmp"), path)
         return (kept, counts, tracking.households(self.engine, "FAILED"), tracking.households(self.engine, "CHANGED"),
-                tracking.runs(self.engine), tracking.totals(self.engine))
+                tracking.runs(self.engine), tracking.totals(self.engine), tracking.conflicts(self.engine),
+                tracking.changes(self.engine, report.MAX_DETAIL_ROWS))
 
 
 _WORDS = {"load": "loaded", "same": "already in", "reverted": "back to what was migrated", "adopt": "adopted",
-          "changed": "changed in farmer profile", "failed": "failed", "incomparable": "already in, not comparable"}
+          "update": "updated from farmer profile", "conflict": "conflict: edited in the registry",
+          "changed": "in, not comparable", "failed": "failed", "incomparable": "already in, not comparable"}
+
+
+def resolve_conflicts(args, argv):
+    """Conflicts a person has settled: the registry stays as it is for these households."""
+    from farmer_profile import runlog, tracking
+    run_dir, log = runlog.start(args.report, "resolve", argv)
+    engine = create_engine(os.environ["TARGET_DSN"])
+    if not tracking.exists(engine) or not tracking.current(engine):
+        log.error("there are no conflicts: the migration's tables are missing or from an earlier version")
+        return STOPPED_EARLY
+    try:
+        with tracking.run_lock(os.environ["TARGET_DSN"]):
+            tracking.start_run(engine, run_dir.name, "resolve", " ".join(argv), None)
+            done = tracking.resolve(engine, run_dir.name, args.resolve)
+            tracking.finish_run(engine, run_dir.name, "COMPLETED", {"resolved": sum(1 for d in done.values() if d)})
+    except tracking.Busy as exc:
+        log.error("%s", exc)
+        return STOPPED_EARLY
+    for key, what in done.items():
+        log.info("%s: %s", key, "; ".join(what) if what else "no open conflict")
+    return OK
 
 
 def main(argv=None):
@@ -812,6 +1049,8 @@ def main(argv=None):
     args = parse_args(argv)
     if args.status:
         return show_status()
+    if args.resolve:
+        return resolve_conflicts(args, argv)
     init_registry()
     return Run(args, argv).execute()
 

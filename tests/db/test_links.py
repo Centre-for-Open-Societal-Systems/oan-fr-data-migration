@@ -59,13 +59,13 @@ def test_a_failed_household_has_none_until_it_loads(world):
     assert kinds(world)["member"] == 3 and world.unlinked() == ([], [])
 
 
-def test_a_changed_household_keeps_the_ones_it_has(world):
+def test_a_record_added_to_a_household_that_was_in_gets_them(world):
     fill(world)
     world.migrate()
-    before = world.contents()
     world.source("INSERT INTO g2p_land_information (id, partner_id, total_land_area) VALUES (9999, 4, 2)")
     world.migrate()
-    assert world.progress()["solo-4"] == "CHANGED" and world.contents() == before
+    assert world.progress()["solo-4"] == "LOADED" and world.unlinked() == ([], [])
+    assert world.one("SELECT household_key FROM migration.migrated_record WHERE kind = 'land' AND odoo_id = 9999") == "solo-4"
 
 
 def test_adopted_data_gets_them(world):

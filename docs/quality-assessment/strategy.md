@@ -114,12 +114,20 @@ document of every loaded record**, by program:
 |---|---|---|
 | **1. Baseline**, before any load | Dry run over everything. Agree what is out of scope, the mapping exceptions, and what may be left empty | Every kind of issue is fixed in Gen1 or accepted |
 | **2. Rehearsal**, on a copy of production | Load, verify, health, then checks 6, 7 and 9 | No blocking check fails; time and capacity known |
-| **3. Production load** | Gen1 becomes read-only. Load, verify, health, both documents checks. The registry's workers give out numbers and scores | No blocking check fails; reports kept |
+| **3. Production load** | Load, verify, health, both documents checks. The registry's workers give out numbers and scores | No blocking check fails; reports kept |
+| **3a. Changes until cutover**, only if Gen1 is still used | `migrate --all` again, as often as agreed: it brings what changed in Gen1. Then verify and health | No blocking check fails, and no conflict is left unsettled |
 | **4. Sign-off** | `health` once more, when the numbers and scores are done. Sample check on production. The decision (section 8) | Signed, with accepted exceptions listed |
 
 **Staff start working in Gen2 after sign-off.** The checks compare Gen2 with Gen1, so they are
 done before anyone edits Gen2, and not repeated afterwards: from then on Gen2 is the record,
 and differences from Gen1 are expected.
+
+**If Gen1 is still used after the production load (phase 3a),** each later run writes Gen1's changes
+over Gen2, **unless staff have edited that household in Gen2 since: then Gen2 is not touched,** and
+the household is a conflict for a person to decide: keep Gen2 as it is (`migrate --resolve`) or
+write Gen1 over the edits (`migrate --overwrite`), for one or more households at a time.
+Records no longer in Gen1 are set inactive, never deleted. A household edited in Gen2 is not
+compared by `verify` or `health`.
 
 ## 8. Deciding
 
@@ -136,8 +144,9 @@ and differences from Gen1 are expected.
 | Unexplained records | Were they deleted in Gen2, or never loaded? | Migration team; load again |
 | Failed households | Is the record wrong in Gen1? | Gen1 team corrects, then run again: only those are retried |
 | Values that don't match | Was it edited in Gen2 since, or is the mapping wrong? | Migration team. A wrong mapping needs a decision on records already loaded |
-| Values left empty | Is the code missing from Master Data, or from the mapping? | Registry or migration team, **before** the load: a rerun doesn't fill in records already there |
-| Households changed in Gen1 | Is Gen1 still being edited? | Correct in Gen2 |
+| Values left empty | Is the code missing from Master Data, or from the mapping? | Registry or migration team, **before** the load: a rerun only updates records that changed in Gen1 |
+| Conflicts not settled | What changed in Gen1, and what did staff change in Gen2? | A person decides: `migrate --resolve` keeps Gen2, `migrate --overwrite` writes Gen1 over it |
+| Out of scope or deleted since, still active | Did the last run over every farmer finish? | `migrate --all` |
 | Broken links, heads or phones | Was it edited in Gen2? | Registry team |
 | Numbers or scores failed | Are the registry's workers running? | Registry team |
 
@@ -174,7 +183,7 @@ How long evidence with personal data is kept, and where, is to be decided.
 
 ```sh
 ./run.sh dry-run     # phase 1: what would happen; nothing is kept
-./run.sh migrate     # load; run again after a stop or a fix
+./run.sh migrate     # load; run again after a stop, a fix, or to bring Gen1's changes
 ./run.sh verify      # every value against Gen1
 ./run.sh health      # the health report; after verify
 ```

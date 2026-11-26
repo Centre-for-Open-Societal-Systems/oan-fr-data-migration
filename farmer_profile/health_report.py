@@ -129,10 +129,15 @@ def _overview(ws, data, where):
         ws.append([result, meaning])
         _colour(ws.cell(ws.max_row, 1))
     ws.append([])
-    ws.append(["Counts only. Which farmer it is: migration-report.xlsx, sheets Failed households, Changed in Gen1 and Issues"])
+    ws.append(["Counts only. Which farmer it is: migration-report.xlsx, sheets Failed households, Conflicts, Updated, "
+               "Set inactive and Issues"])
     for column, width in zip("ABCDEFGHI", (52, 16, 12, 10, 12, 14, 24, 60, 60)):
         ws.column_dimensions[column].width = width
     _wrapped(ws, {8, 9})
+
+
+# The columns after the groups: records that are not among Gen1's any more, and records Gen1 never had
+_AFTER = ["Deleted from Gen1 since, set inactive", "Deleted from Gen1 since, still active", H.MADE]
 
 
 def _reconciliation(ws, measures, where):
@@ -146,16 +151,15 @@ def _reconciliation(ws, measures, where):
         scope = of[(kind, "Loaded, of what should be")]
         rows.append([kind, H.worst([m for m in measures if m.area == H.RECONCILIATION and m.record_type == kind]), total,
                      *counts, "yes" if sum(counts) == total else "NO", scope.total, _percent(scope),
-                     of[(kind, "Loaded, and no longer in Gen1")].count, of[(kind, H.MADE)].count])
-    header = ["Record", "Result", "In Gen1", *groups, "Adds up", "Should be loaded", "Loaded, of what should be",
-              "Loaded, and no longer in Gen1", H.MADE]
-    numbers = _table(ws, header, rows, [14, 12, 10, 10, 10, 12, 10, 12, 14, 14, 10, 12, 14, 16, 14], 2)
+                     *(of[(kind, metric)].count for metric in _AFTER)])
+    header = ["Record", "Result", "In Gen1", *groups, "Adds up", "Should be loaded", "Loaded, of what should be", *_AFTER]
+    numbers = _table(ws, header, rows, [14, 12, 10, *([12] * len(groups)), 10, 12, 14, 16, 16, 14], 2)
     for number in numbers:
-        ws.cell(number, 13).number_format = '0.0"%"'
+        ws.cell(number, 6 + len(groups)).number_format = '0.0"%"'
 
     column = {**{g: get_column_letter(4 + i) for i, g in enumerate(groups)}, "In Gen1": "C",
               "Loaded, of what should be": get_column_letter(6 + len(groups)),
-              "Loaded, and no longer in Gen1": get_column_letter(7 + len(groups)), H.MADE: get_column_letter(8 + len(groups))}
+              **{metric: get_column_letter(7 + len(groups) + i) for i, metric in enumerate(_AFTER)}}
     for kind, number in zip(H.KINDS, numbers):
         for metric, letter in column.items():
             m = of[(kind, metric)]

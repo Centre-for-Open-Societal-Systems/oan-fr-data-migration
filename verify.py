@@ -70,16 +70,17 @@ def main(argv=None):
         expected_ids = collections.defaultdict(set)
         skipped = collections.Counter()
         tracked = tracking.exists(engine)
+        current = tracked and tracking.current(engine)
         left_out, unreadable, twice = collections.defaultdict(list), [], []
         groups = source.batches(planned, args.batch_size)
         n_batches = len(groups)
         for b, group in enumerate(groups, start=1):
             state = tracking.State(engine, group) if tracked else tracking.NoState()
-            parts, results = [], []
+            chosen_here = []
             for unit, data, error in source.read_units(conn, group):
                 status = state.progress.get(unit.key, ("",))[0] if tracked else ""
                 plan = state.plan(unit)
-                if status in ("FAILED", "CHANGED") or plan["do"] == "recomposed":
+                if status in ("FAILED", "CHANGED", "CONFLICT") or plan["do"] == "recomposed":
                     left_out[status or "CHANGED"].append(unit.key)
                     continue
                 if error is not None:
@@ -89,11 +90,27 @@ def main(argv=None):
                         and source.changed_parts(plan["fingerprint"], source.fingerprint(data)):
                     left_out["CHANGED"].append(unit.key)  # changed since the last run
                     continue
-                parts.append(data)
-                results.append(transformer(data))
+                chosen_here.append((unit, data, transformer(data)))
+            conn.rollback()
+            if current:  # a household the registry has edited since is not compared: it is the registry's now
+                ids = {r["internal_record_id"] for _, _, res in chosen_here for _, rows in res.tables() for r in rows}
+                raw = engine.raw_connection()
+                try:
+                    edited = tracking.edited(raw.cursor(), models, ids)
+                    raw.rollback()
+                finally:
+                    raw.close()
+                mine = []
+                for unit, data, res in chosen_here:
+                    if edited & {r["internal_record_id"] for _, rows in res.tables() for r in rows}:
+                        left_out["EDITED"].append(unit.key)
+                    else:
+                        mine.append((unit, data, res))
+                chosen_here = mine
+            parts, results = [d for _, d, _ in chosen_here], [r for _, _, r in chosen_here]
+            for unit, _, _ in chosen_here:
                 if unit.households:
                     twice += [(unit.key, V.record_id("member", f"solo-{f}")) for f in unit.farmers]
-            conn.rollback()
             odoo_of = {}
             data = source.merge(parts)
             for kind, rows in (("farmer", data["farmers"]), ("land", data["lands"]), ("crop", data["crops"])):
@@ -141,16 +158,20 @@ def main(argv=None):
         with engine.connect() as tconn:
             if everything:
                 n_src = len(chosen)
+                not_compared = sum(len(left_out[k]) for k in ("CHANGED", "CONFLICT", "EDITED"))
+                # records set inactive because farmer profile no longer has them are not expected
+                inactive = (" AND internal_record_id NOT IN (SELECT gen2_id FROM migration.migrated_record "
+                            "WHERE removed_run_id IS NOT NULL)") if current else ""
                 for register, cls_ids in expected_ids.items():
                     cls = getattr(models, f"G2PRegister{register}")
-                    n = tconn.execute(text(f"SELECT count(*) FROM {cls.__tablename__} WHERE created_by = :by"),
+                    n = tconn.execute(text(f"SELECT count(*) FROM {cls.__tablename__} WHERE created_by = :by{inactive}"),
                                       {"by": MIGRATED_BY}).scalar()
-                    # the records of changed households are not among the expected ones
+                    # the records of households not compared are not among the expected ones
                     checks.add("Records", f"{register}: no migrated records beyond farmer profile's", len(cls_ids), n,
-                               warn_only=bool(left_out["CHANGED"]),
-                               detail=("the registry has migrated records farmer profile no longer has"
-                                       + (f", or of the {len(left_out['CHANGED'])} changed households"
-                                          if left_out["CHANGED"] else "")) if n > len(cls_ids) else "")
+                               warn_only=bool(not_compared),
+                               detail=("the registry has migrated records farmer profile no longer has, still active"
+                                       + (f", or of the {not_compared} households not compared"
+                                          if not_compared else "")) if n > len(cls_ids) else "")
                 log.info("%d farmers in scope in farmer profile", n_src)
             V.registry_checks(tconn, models, master, checks)
     finally:
