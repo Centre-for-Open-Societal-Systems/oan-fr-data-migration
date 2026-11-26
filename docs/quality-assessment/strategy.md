@@ -58,8 +58,8 @@ their records in Gen2 (section 6).
 | 3 | **Direct comparison** | Every loaded farmer | `verify` compares names, birth date, gender, phones, and the number of lands, crops and members with Gen1's own rows, without the migration's mapping | Built |
 | 4 | **Structure and codes** | Every loaded record | `verify` and `health`: links, heads, primary phones, codes and locations in Master Data | Built |
 | 5 | **Traceability** | Every loaded record | `health`, from the saved Gen1 and Gen2 ID pairs | Built |
-| 6 | **Sample check** | A random sample of farmers, and chosen cases | People compare the same records in both applications: [`sample-check.md`](sample-check.md) | Procedure written. To do: people, and the spreadsheet for the results |
-| 7 | **Acceptance test** | Main tasks in Gen2 | Staff search, open, edit and approve migrated records: [`acceptance-test.md`](acceptance-test.md) | Cases drafted. To do: people, and agreement with the registry team |
+| 6 | **Sample check** | A random sample of farmers, and chosen cases | People compare the same records in both applications | See [`sample-check.md`](sample-check.md) |
+| 7 | **Acceptance test** | Main tasks in Gen2 | Staff search, open, edit and approve migrated records | See [`acceptance-test.md`](acceptance-test.md) |
 | 8 | **Documents: files** | Every file in the documents bucket | `move_to_garage.sh check` compares name, size and MD5 of every file | Built |
 | 9 | **Documents: links and content** | Every document of a loaded record | Links by `health`; files by a documents check that reads the storage: section 6 | To do, after the linking is built |
 
