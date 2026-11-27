@@ -275,8 +275,10 @@ the registry already through intake). The migration doesn't compare people.
 ## Health report
 
 `./run.sh health` says whether the migration is healthy, in numbers: after `migrate`
-and `verify`. A load that reaches its end also measures it, into the Health sheet of
-`migration-report.xlsx`.
+and `verify`. A load over every farmer (`--all`) that reaches its end also
+measures it, into the Health sheet of `migration-report.xlsx`. A run over some
+farmers (`--limit`, `--ids`) does not: the health is the whole migration's, and
+measuring it takes as long after one household as after all. Run `health` then.
 
 | Part | Answers |
 |---|---|

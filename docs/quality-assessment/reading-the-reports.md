@@ -262,7 +262,7 @@ The tables above, in the workbook.
 
 | Sheet | Open it when | What is in it |
 |---|---|---|
-| **Health** | You want the result without another file | Every health metric at the end of the load. What `verify` finds is "not checked" here |
+| **Health** | You want the result without another file | Every health metric at the end of a load over every farmer (`--all`). After a run over some farmers it says "Not measured": run `health` instead. What `verify` finds is "not checked" here |
 | **Summary** | You want the figures of this run | Run details; households loaded, failed and left; records per register; issues by kind; fields with data that has nowhere to go in Gen2 |
 | **Failed households** | The health report says households failed | One row per household: its farmers' Gen1 IDs, the kind of error, what it said, how often it was tried |
 | **Changed in Gen1** | The health report says households changed | One row per household: its farmers, and what changed since it was loaded. Gen2 was not touched |

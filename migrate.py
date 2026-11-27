@@ -442,7 +442,8 @@ class Run:
         self.after_load = {}
         self.stop = {"asked": False}
         self.error = None
-        self.health, self.no_health = None, "Measured after a load that reaches its end: run health.py"
+        self.health, self.no_health = None, "Measured after a load over every farmer (--all) that reaches its end: " \
+                                             "run health.py"
 
     # -- before ------------------------------------------------------------------------
 
@@ -651,8 +652,12 @@ class Run:
                     self.log.error("stopped: %s", self.error)
                     if self.sql_file and not self.sql_file.handle.closed:
                         self.finalize(False)
-                if self.tracked and not self.error and not self.args.finalize_only:
+                # the health is the whole migration's: worth its time after a run over every farmer only
+                if self.tracked and not self.error and self.args.all:
                     self.measure_health(status)
+                elif self.tracked and not self.error and not self.args.finalize_only:
+                    self.no_health = ("Not measured: this run covered only some farmers. Run health.py for the "
+                                      "whole migration")
                 try:
                     self.reports(status)
                 except Exception:

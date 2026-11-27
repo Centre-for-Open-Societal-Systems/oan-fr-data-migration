@@ -245,6 +245,17 @@ def test_a_report_that_fails_does_not_fail_the_load(world):
     assert wb["Health"]["A2"].value.startswith("The health could not be measured")
 
 
+def test_only_a_run_over_every_farmer_measures(world):
+    """The health is the whole migration's: a run over some farmers does not take the time to measure it."""
+    world.farmers(3)
+    world.migrate("--ids", "1")
+    assert world.one("SELECT to_regclass('migration_report.snapshot')") is None
+    wb = openpyxl.load_workbook(world.folder() / "migration-report.xlsx")
+    assert wb["Health"]["A2"].value.startswith("Not measured: this run covered only some farmers")
+    world.migrate()
+    assert world.one("SELECT count(*) FROM migration_report.snapshot WHERE taken_by = 'migrate'") == 1
+
+
 def test_nothing_migrated_yet(world):
     code, out = world.health()
     assert code == 1 and "nothing has been migrated yet" in out
