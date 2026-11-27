@@ -297,8 +297,26 @@ marks a household as failed.
 
 **Another source is refused.** The run remembers farmer profile's own
 `database.uuid`. Another database may use the same Odoo ids for other people. If
-it really is the same data (Odoo gives a copy a new uuid), confirm with
-`--accept-source <uuid>`.
+it really is the same data, confirm with `--accept-source <uuid>`.
+
+`database.uuid` is the ID Odoo gives a database when it is created. It is kept in
+Odoo's settings table. To read it, on the farmer profile database:
+
+```sql
+SELECT value FROM ir_config_parameter WHERE key = 'database.uuid';
+```
+
+The first run saves it with every run. To see what the registry was migrated
+from, on the registry database:
+
+```sql
+SELECT run_id, started_at, source_uuid FROM migration.run ORDER BY started_at;
+```
+
+A copy made with `pg_dump` and restored keeps the same `database.uuid`. One
+made with Odoo's "duplicate database" gets a new one, and is refused until you
+confirm it. The refusal message shows both IDs, and the `--accept-source`
+command to run.
 
 **The tables** are in the schema `migration` of the registry's database
 (`deploy/migration-schema.sql`): `run`, `household_progress`, `migrated_record`,
