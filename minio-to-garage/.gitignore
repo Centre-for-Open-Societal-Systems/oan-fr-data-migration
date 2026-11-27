@@ -2,3 +2,4 @@ rclone.conf
 logs/
 *.log
 __pycache__/
+.env
