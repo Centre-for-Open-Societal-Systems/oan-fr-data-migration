@@ -172,6 +172,19 @@ def test_lost_values_and_shared_ids(world):
     assert world.measured("Edited in Gen2 since (not compared)", "farmer")[0] == 1
 
 
+def test_a_reason_counts_only_for_a_record_that_is_compared(world):
+    """Farmer 1's value was left out with a reason, and the farmer was edited in Gen2 since, so it is not
+    compared. Farmer 2's value is lost without a reason. Farmer 1's reason must not cancel that loss."""
+    world.farmers(3)
+    world.source("UPDATE res_partner SET martial_status = 'married'")
+    world.source("UPDATE res_partner SET martial_status = 'unheard of' WHERE id = 1")
+    world.migrate()
+    world.edited("farmers", "first_name = 'Abebe1'")
+    world.rows("UPDATE g2p_register_farmers SET marital_status = NULL WHERE first_name = 'Abebe2'")
+    world.health()
+    assert world.measured("Values lost without a reason", "farmer") == (1, None, "AMBER")
+
+
 def test_required_fields(world):
     world.rows("""INSERT INTO g2p_register_sections (section_id, register_id, section_register_id, section_mnemonic,
                     is_core_section, documents_required, no_of_verifications_required, is_list, section_weightage,

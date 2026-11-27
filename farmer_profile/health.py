@@ -520,11 +520,13 @@ class Health:
                                 ([r[1] for r in some],))[0]
                 for (name, _), n in zip(pairs, got):
                     totals[(name, 2)] += n
+            # the reasons of the records counted above only: not of one edited in Gen2, or never loaded,
+            # which would hide a value lost elsewhere
             explained = collections.Counter()
             for field, n in self.rows("""
                     SELECT i.field, count(DISTINCT i.odoo_id) FROM migration.issue i
-                      JOIN migration.household_progress p ON p.household_key = i.household_key AND p.status = 'LOADED'
-                     WHERE i.severity = 'dropped' AND i.status = 'OPEN' AND i.entity = %s GROUP BY 1""", (_ENTITY[kind],)):
+                     WHERE i.severity = 'dropped' AND i.status = 'OPEN' AND i.entity = %s AND i.odoo_id = ANY(%s)
+                     GROUP BY 1""", (_ENTITY[kind], [str(r[0]) for r in rows])):
                 explained[field] += n
             unexplained = 0
             for name, column in pairs:
