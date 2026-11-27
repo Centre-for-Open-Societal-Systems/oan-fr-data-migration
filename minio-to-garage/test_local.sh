@@ -99,13 +99,20 @@ for i in 2001 2002 2003; do head -c 5000 /dev/urandom > "$W/new-$i.webp"; rc cop
 if M check >/dev/null 2>&1; then bad "check should fail with 3 new files"; else ok "check reports the 3 new files as missing"; fi
 M catchup 1 && ok "catchup copied the new files" || bad "catchup failed"
 M check && ok "check passes after catchup" || bad "check failed after catchup"
-# 5. a damaged file in Garage is caught
+# 5. after the switch: a file changed in MinIO, then written again in Garage (newer); catchup keeps Garage's
+K=land-certificate-20-100020.webp
+head -c 6000 /dev/urandom > "$W/minio-v2.webp"; rc copyto "$W/minio-v2.webp" "old:documents/$K"
+sleep 2
+head -c 8000 /dev/urandom > "$W/garage-v3.webp"; rc copyto "$W/garage-v3.webp" "garage:documents/$K"
+M catchup 1 >/dev/null && ok "catchup runs after the switch" || bad "catchup failed after the switch"
+rc cat "garage:documents/$K" | cmp -s - "$W/garage-v3.webp" && ok "catchup keeps the newer file in Garage" || bad "catchup replaced the newer file in Garage"
+# 6. a damaged file in Garage is caught
 head -c 7000 /dev/urandom > "$W/bad.webp"; rc copyto "$W/bad.webp" garage:documents/land-certificate-10-100010.webp
 if M check >/dev/null 2>&1; then bad "check should catch the damaged file"; else ok "check catches a damaged file"; fi
 grep -q "land-certificate-10-100010.webp" "$W"/logs/*-check-differ.txt && ok "the damaged file is named in the report" || bad "damaged file not in report"
-# 6. MinIO untouched
+# 7. MinIO untouched
 n=$(rc lsf old:documents | wc -l); [ "$n" -eq 2003 ] && ok "MinIO still has all 2003 files" || bad "MinIO has $n files"
-# 7. the key never appears in the logs
+# 8. the key never appears in the logs
 if grep -rq -- "$MP\|$GS" "$W/logs"; then bad "a secret appears in the logs"; else ok "no secret in the logs"; fi
 M size
 

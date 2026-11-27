@@ -8,7 +8,9 @@
 # The keys live only in that file; this script never prints them.
 #
 # It only copies and compares. It never deletes or changes anything in MinIO,
-# and never deletes anything in Garage (no sync, no move, no purge).
+# and never deletes anything in Garage (no sync, no move, no purge). It never
+# replaces a file that is newer in Garage (--update), so a catchup after the
+# switch cannot overwrite a document the farmer profile wrote to Garage.
 #
 #   ./move_to_garage.sh size            count files and bytes on both sides
 #   ./move_to_garage.sh copy            copy every document (safe to stop and run again)
@@ -51,7 +53,7 @@ copy() {   # $1 = optional --max-age value
   [ -n "${1:-}" ] && extra+=(--max-age "$1")
   [ -n "$BWLIMIT" ] && extra+=(--bwlimit "$BWLIMIT")
   echo "Copying $SRC -> $DST ${1:+(files newer than $1)}; log: $log"
-  if rc copy "$SRC" "$DST" "${common[@]}" -M --transfers "$TRANSFERS" --checkers "$CHECKERS" \
+  if rc copy "$SRC" "$DST" "${common[@]}" -M --update --transfers "$TRANSFERS" --checkers "$CHECKERS" \
         "${extra[@]}" --log-file "$log"; then
     echo "Copy finished without errors."
   else
@@ -88,5 +90,5 @@ case "${1:-}" in
   catchup) hours="${2:-48}"; [[ "$hours" =~ ^[0-9]+$ ]] || die "catchup takes a whole number of hours"
            copy "${hours}h" "catchup-${hours}h" ;;
   check)   check ;;
-  *)       sed -n '2,22p' "$0"; exit 2 ;;
+  *)       sed -n '2,24p' "$0"; exit 2 ;;
 esac
