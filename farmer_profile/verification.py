@@ -219,23 +219,29 @@ _LINKS = [("Farmer", "Household"), ("HouseholdMember", "Household"), ("FarmerPho
           ("Land", "Farmer"), ("Crop", "Land")]
 
 
-def registry_checks(conn, models, master, checks):
+def structure_checks(one, models, checks, mine):
+    """Links resolve, one head per household, one primary number per farmer. one(sql): its one value;
+    mine(alias): the condition that a row is the migration's."""
     t = lambda reg: getattr(models, f"G2PRegister{reg}").__tablename__
-    one = lambda sql, **p: conn.execute(text(sql), {"by": MIGRATED_BY, **p}).scalar()
-
     for child, parent in _LINKS:
-        n = one(f"SELECT count(*) FROM {t(child)} c WHERE c.created_by = :by AND NOT EXISTS "
+        n = one(f"SELECT count(*) FROM {t(child)} c WHERE {mine('c')} AND NOT EXISTS "
                 f"(SELECT 1 FROM {t(parent)} p WHERE p.internal_record_id = c.link_internal_record_id)")
         checks.add("Registry", f"every {child} links to a {parent}", 0, n)
 
-    n = one(f"""SELECT count(*) FROM {t('Household')} h WHERE h.created_by = :by AND
+    n = one(f"""SELECT count(*) FROM {t('Household')} h WHERE {mine('h')} AND
                 (SELECT count(*) FROM {t('HouseholdMember')} m
                   WHERE m.link_internal_record_id = h.internal_record_id AND m.is_head) <> 1""")
     checks.add("Registry", "every household has exactly one head member", 0, n)
 
-    n = one(f"""SELECT count(*) FROM (SELECT link_internal_record_id FROM {t('FarmerPhone')} WHERE created_by = :by
+    n = one(f"""SELECT count(*) FROM (SELECT p.link_internal_record_id FROM {t('FarmerPhone')} p WHERE {mine('p')}
                 GROUP BY 1 HAVING count(*) FILTER (WHERE is_primary) <> 1) x""")
     checks.add("Registry", "every farmer with a phone has exactly one primary number", 0, n)
+
+
+def registry_checks(conn, models, master, checks):
+    t = lambda reg: getattr(models, f"G2PRegister{reg}").__tablename__
+    one = lambda sql, **p: conn.execute(text(sql), {"by": MIGRATED_BY, **p}).scalar()
+    structure_checks(one, models, checks, lambda a: f"{a}.created_by = :by")
 
     for reg in F.WRITTEN:
         n = one(f"SELECT count(*) FROM {t(reg)} WHERE created_by = :by AND (record_name IS NULL OR search_text IS NULL)")

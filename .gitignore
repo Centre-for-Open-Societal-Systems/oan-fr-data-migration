@@ -239,6 +239,7 @@ htmlcov/
 out/
 *.log
 *.xlsx
+!docs/quality-assessment/examples/*.xlsx
 *.zip
 
 # Local dependency checkout. The pinned revision is fetched by Dockerfile.

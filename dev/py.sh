@@ -10,6 +10,7 @@
 #
 #   dev/py.sh migrate --all --dry-run
 #   dev/py.sh verify
+#   dev/py.sh health
 #
 # Codes and locations are checked against the Master Data Service at
 # MDS_API_URL (with MDS_TOKEN_URL, MDS_CLIENT_ID, MDS_CLIENT_SECRET); with
@@ -20,7 +21,7 @@ source "$(dirname "$0")/env.sh"
 
 command=${1:?usage: dev/py.sh migrate|verify [arguments]}
 shift
-case "$command" in migrate|verify) ;; *) echo "unknown command $command: migrate or verify" >&2; exit 2;; esac
+case "$command" in migrate|verify|health) ;; *) echo "unknown command $command: migrate, verify or health" >&2; exit 2;; esac
 
 SOURCE_CONTAINER=${SOURCE_CONTAINER:-fp-db}
 SOURCE_DB=${SOURCE_DB:-odk_a}

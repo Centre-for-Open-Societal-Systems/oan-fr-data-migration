@@ -348,11 +348,12 @@ def test_the_report(world):
     world.source("UPDATE res_partner SET given_name = 'X' WHERE id = 11")
     world.migrate()
     wb = openpyxl.load_workbook(world.folder() / "migration-report.xlsx")
-    assert wb.sheetnames == ["Summary", "Failed households", "Changed in Gen1", "Issues summary", "Issues", "Runs",
+    assert wb.sheetnames == ["Health", "Summary", "Failed households", "Changed in Gen1", "Issues summary", "Issues", "Runs",
                              "Batches", "Mapping - Gen1 fields", "Mapping - Gen2 columns", "Mapping - key"]
     assert wb["Failed households"]["A2"].value == "solo-10"
     assert wb["Changed in Gen1"]["A2"].value == "solo-11"
     assert wb["Runs"].max_row == 3
+    assert [r[2].value for r in wb["Runs"].iter_rows(min_row=2)] == ["COMPLETED_WITH_FAILURES"] * 2  # this run's end too
 
 
 def test_verify(world):

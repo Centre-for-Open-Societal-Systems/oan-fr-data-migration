@@ -20,6 +20,7 @@ profile's database, the registry's database, and the Master Data Service.
 |---|---|
 | `migrate.py` | Migrates in batches: Python prepares the rows, SQL loads them, or `--sql-out` writes them to a file to review and run with psql. Queues what the registry generates afterwards. Writes the log, summary and Excel report. |
 | `verify.py` | Checks the registry against farmer profile and writes its own log and Excel report; exits 1 if a check fails |
+| `health.py` | Measures the health of the migration: where every Gen1 record went, what is wrong, whether it can be traced. Writes `health-report.xlsx` |
 
 ## Quick start (local)
 
@@ -38,6 +39,7 @@ The other steps:
 ./run.sh sql          # write migration.sql instead of loading
 ./run.sh apply        # run the latest migration.sql on the registry database
 ./run.sh fresh        # reset + migrate + verify in one go
+./run.sh health       # how healthy the migration is: health-report.xlsx
 ./run.sh status       # how far the migration is, and what is open
 ./run.sh summary      # show the latest migrate and verify summaries again
 ./run.sh report       # open the latest Excel report
@@ -68,6 +70,7 @@ see "Deploy".
 run.sh                    the local commands: setup, dry-run, migrate, sql, apply, verify, ...
 migrate.py                the migration: reads, transforms, checks, loads (or writes migration.sql), reports
 verify.py                 the verification: checks the registry against farmer profile and Master Data
+health.py                 the health report: run it after migrate and verify
 farmer_profile/           the migration's code
   source.py                 reads farmer profile (Odoo) read-only: which farmers, and all their data
   transform.py              Odoo rows -> registry rows; every value it can't carry over becomes an issue
@@ -82,11 +85,13 @@ farmer_profile/           the migration's code
   summary.py                writes summary.txt
   runlog.py                 the run folder and the log
   verification.py           the checks verify.py runs
+  health.py, health_report.py  the health metrics, and their workbook
   tracking.py               the audit and progress tables: what a rerun resumes from
 tests/                    tests (./run.sh test)
 Dockerfile                the job image, built on the registry's own staff-api image
 deploy/job.yaml           runs the image as a one-off Kubernetes Job
 deploy/migration-schema.sql  the audit and progress tables
+deploy/migration-report-schema.sql  the health report's tables
 docs/                     technical migration approach
 .env.example              every setting, to copy to .env (.env is never committed)
 dev/                      local helpers, used by run.sh
@@ -109,9 +114,10 @@ the folders are the record of every run. `out/` is not committed.
 | `summary.txt` | both | The summary printed at the end of the run. For a migration: records read, added and already there; farmer profile fields per status, and how many hold data; registry columns per status, and how many are filled; what was queued after the load; the data that didn't reach the registry; the issues by kind. For a verification: the verdict and every check that didn't pass. |
 | `migrate.log` / `verify.log` | both | The full log, also printed: settings (passwords masked), every batch with its counts and time, errors with their traceback, and the summary |
 | `summary.json` | both | The same counts, for scripts |
-| `migration-report.xlsx` | migrate | Sheets: Summary, Failed households, Changed in Gen1, Issues summary, Issues, Runs, Batches, and the mapping (see "Reports" below) |
+| `migration-report.xlsx` | migrate | Sheets: Health, Summary, Failed households, Changed in Gen1, Issues summary, Issues, Runs, Batches, and the mapping (see "Reports" below) |
 | `issues.csv` | migrate | Every issue, of every run so far: a household that failed or has changed, a value left out, a record not migrated, or something worth a look. A dry run lists its own only |
 | `migration.sql` | migrate with `sql` / `--sql-out` | The load as one SQL transaction, to review and run with psql (`./run.sh apply` locally) |
+| `health-report.xlsx` | health | The health metrics: Overview, Reconciliation, Run health, Quality, IDs, the splits, Trend. Counts only |
 | `verify-report.xlsx` | verify | Sheets: Summary with the verdict, Checks, Columns (values compared per column), Differences |
 | `differences.csv` | verify | Every value that differs |
 
@@ -265,6 +271,42 @@ mode: the lock that allows one run at a time is a session lock.
 
 **Not covered:** the same person as two records (twice in farmer profile, or in
 the registry already through intake). The migration doesn't compare people.
+
+## Health report
+
+`./run.sh health` says whether the migration is healthy, in numbers: after `migrate`
+and `verify`. A load over every farmer (`--all`) that reaches its end also
+measures it, into the Health sheet of `migration-report.xlsx`. A run over some
+farmers (`--limit`, `--ids`) does not: the health is the whole migration's, and
+measuring it takes as long after one household as after all. Run `health` then.
+
+| Part | Answers |
+|---|---|
+| Reconciliation | Where did every Gen1 record go? Each is in one group: loaded, failed, not added, left out with a reason, out of scope, not reached, or **unexplained**. They add up to Gen1's records |
+| Run health | Did the last run complete, what failed, do farmers and households have their numbers and scores? |
+| Quality | Is a value lost without a reason, what was left empty, do links and heads hold, are IDs shared? |
+| IDs | Has every record both IDs, did Gen1's IDs arrive? |
+| Trend | The same numbers, snapshot by snapshot |
+
+| Result | Meaning |
+|---|---|
+| `GREEN` | As it should be |
+| `AMBER` | Needs a look, or is not finished |
+| `RED` | Blocks sign-off: unexplained records, failed households, a last run that didn't complete, values that don't match Gen1, broken links, records without both IDs, Farmer IDs that changed |
+| `NOT CHECKED` | Not measured yet, and never green. What `verify` finds counts until the next load, and only when it ran over every farmer |
+| `INFO` | A number without a target |
+
+It exits 0 when green or amber, 3 when red, 1 when it couldn't measure. Every sheet and
+metric is explained in `docs/quality-assessment/reading-the-reports.md`.
+
+**What it doesn't judge** is Gen1's own data: an age that is wrong in Gen1 and arrives
+unchanged is a correct migration. Records edited in Gen2 since (the registry's history
+has a row for them that the migration didn't write), and households changed in Gen1 since, are not compared.
+
+The results are kept in the schema `migration_report` of the registry's database
+(`snapshot`, `measure`; `deploy/migration-report-schema.sql`), e.g. for dashboards.
+They and `health-report.xlsx` hold counts only: no names, numbers, IDs or error
+messages. `migration-report.xlsx` still holds personal data.
 
 ## Reports
 
@@ -495,7 +537,7 @@ Run these in order:
 1. `migrate.py --limit 100 --dry-run`: writes each batch and rolls it back.
    Read the report and the issues.
 2. `migrate.py --all`
-3. `verify.py`
+3. `verify.py`, then `health.py`
 4. Start the registry's workers, so they allocate the functional ids and
    compute the scores.
 
