@@ -16,6 +16,12 @@ WORDS = [
                  "from the other."),
     ("Recorded reason", "When the migration leaves something out it writes down why. The reasons are in migration-report.xlsx, "
                         "sheet Issues."),
+    ("Update", "A later load writes Gen1's changes over the Gen2 records it loaded before, unless staff have edited the "
+               "household in Gen2 since. Each value it changed is in migration-report.xlsx, sheet Updated."),
+    ("Conflict", "A household that changed in Gen1 and was also edited by staff in Gen2. The migration does not touch it: a "
+                 "person decides. They are in migration-report.xlsx, sheet Conflicts."),
+    ("Set inactive", "A record that is no longer in Gen1 (archived, deleted, or no longer part of its household) gets the "
+                     "status INACTIVE in Gen2. Nothing is deleted from Gen2."),
 ]
 
 _WORKER = "Wait, and run health again. If it does not go down, ask the registry team whether the worker is running."
@@ -31,9 +37,9 @@ GUIDE = {
         "These records are not in Gen2. Something in their household could not be loaded, so nothing of that household was.",
         "See 'Households that failed to load' on the sheet Run health."),
     "Not added": (
-        "These records are not in Gen2. They were added to Gen1 after their household was loaded, or their household has changed "
-        "since. The migration does not add to a household it has already loaded.",
-        "Open migration-report.xlsx, sheet Changed in Gen1. Add the record in Gen2 if it is wanted."),
+        "These records are not in Gen2. They were added to Gen1 after their household was loaded, and no load has updated the "
+        "household since, or the household is a conflict.",
+        "Run migrate with --all again: it adds them. For a conflict, see 'Conflicts not settled' on the sheet Run health."),
     "Left out": (
         "These records are not in Gen2, because of a rule or a problem the migration met, and it wrote down the reason itself. For "
         "example, a phone number that cannot be read.",
@@ -44,6 +50,13 @@ GUIDE = {
         "archived farmer; the phone number is disabled; the membership has ended; no active farmer is in the household. Draft, "
         "rejected and disabled farmers are not out of scope: they are migrated.", ""),
     "Out of scope, by reason": ("How many of the out-of-scope records each rule applies to. Listed below the table.", ""),
+    "Out of scope since, set inactive": (
+        "These records were loaded, and are out of scope now: for example, the farmer was archived in Gen1 afterwards. A later "
+        "load gave them the status INACTIVE in Gen2, or a person decided to keep them as they are.", ""),
+    "Out of scope since, still active": (
+        "These records were loaded, and are out of scope now, but are still active in Gen2.",
+        "Run migrate with --all: at its end it sets them inactive. If they stay, see 'Conflicts not settled' on the sheet Run "
+        "health."),
     "Not reached yet": (
         "No load has come to these records yet, because the last one stopped early or because they are new in Gen1.",
         "Run migrate again."),
@@ -53,8 +66,13 @@ GUIDE = {
     "Loaded, of what should be": (
         "How many of the records that should be in Gen2 are there.",
         "Look at the other columns of the same row on the sheet Reconciliation. They show where the rest are."),
-    "Loaded, and no longer in Gen1": ("These records are in Gen2, but were deleted from Gen1 after the load.",
-                                      "Nothing, if it was right to delete them."),
+    "Deleted from Gen1 since, set inactive": (
+        "These records were loaded, and deleted from Gen1 afterwards. A later load gave them the status INACTIVE in Gen2, or a "
+        "person decided to keep them as they are.", ""),
+    "Deleted from Gen1 since, still active": (
+        "These records were loaded, and deleted from Gen1 afterwards, but are still active in Gen2.",
+        "Run migrate with --all: at its end it sets them inactive. If they stay, see 'Conflicts not settled' on the sheet Run "
+        "health."),
     "Made for lone farmers": (
         "In Gen2 every farmer needs a household. The migration makes one for a farmer who has none in Gen1.", ""),
     # -- Run health
@@ -64,7 +82,8 @@ GUIDE = {
     "Last run: farmers per minute": ("How fast the last load was.", ""),
     "Runs by how they ended": (
         "How many loads there have been, and how each ended. COMPLETED: ran to the end. COMPLETED_WITH_FAILURES: ran to the end, "
-        "with some households left out. STOPPED: someone stopped it. FAILED: it could not go on. INTERRUPTED: it was killed.", ""),
+        "with some households left out. COMPLETED_WITH_CONFLICTS: ran to the end, and left conflicts for a person to decide. "
+        "STOPPED: someone stopped it. FAILED: it could not go on. INTERRUPTED: it was killed.", ""),
     "Households that failed to load": (
         "Something in these households could not be loaded, so nothing of them is in Gen2.",
         "Open migration-report.xlsx, sheet Failed households. Correct the record in Gen1, then run migrate again."),
@@ -73,9 +92,25 @@ GUIDE = {
     "Households left out because a farmer's number is taken": (
         "A farmer in this household has a number (FR-...) that another farmer already has in Gen2.",
         "Decide whose number it is, correct the other one, and run migrate again."),
-    "Households changed in Gen1 since they were migrated": (
-        "Someone changed these households in Gen1 after they were loaded. Gen2 still has what was loaded.",
-        "Open migration-report.xlsx, sheet Changed in Gen1. Make the same change in Gen2."),
+    "Households not compared with Gen1": (
+        "These households are in Gen2, but could not be compared with Gen1: Gen1 could not be read for them, or part of them was "
+        "in Gen2 from before the migration kept its records. They are not updated.",
+        "Open migration-report.xlsx, sheet Not compared. Ask the migration team."),
+    "Conflicts not settled": (
+        "These households changed in Gen1, and staff have also edited them in Gen2 since they were loaded. The migration has not "
+        "touched them: Gen2 does not show Gen1's change.",
+        "Open migration-report.xlsx, sheet Conflicts, and decide for each household. To keep Gen2 as it is, run migrate with "
+        "--resolve and the household. To write Gen1 over the edits made in Gen2, run migrate with --overwrite and the "
+        "household."),
+    "Values updated from Gen1 since the first load": (
+        "How many values later loads wrote over in Gen2, because they changed in Gen1.", ""),
+    "Values written over edits in Gen2 by a person's decision": (
+        "How many values were written over with Gen1's in households staff had edited in Gen2, because a person decided so "
+        "(migrate --overwrite). The value staff had entered is in migration-report.xlsx, sheet Updated, column Before.", ""),
+    "Records added to households that were in": (
+        "How many records later loads added to households already in Gen2, such as a new phone or land.", ""),
+    "Records kept in Gen2 by a person's decision": (
+        "Records that are no longer in Gen1, which a person decided to keep as they are in Gen2 (migrate --resolve).", ""),
     "Farmer numbers copied from Gen1": ("These farmers had a number (FR-...) in Gen1 and have the same one in Gen2.", ""),
     "Farmer numbers generated by Gen2": ("These farmers had no number in Gen1. Gen2 has given them one.", ""),
     "Farmer numbers waiting": ("These farmers are waiting for Gen2 to give them a number. Gen2 shows TEMP-... until then.", _WORKER),
@@ -194,10 +229,11 @@ _RULES = ("Farmers without their household", "Members without their household", 
           "Lands without their farmer", "Crops without their land", "Households without exactly one head",
           "Farmers with phones, and not exactly one primary")
 CHECKS = {
+    "Out of scope since, still active": ("0", True, 6), "Deleted from Gen1 since, still active": ("0", True, 6),
     "Not reached yet": ("0", False, 6), "Unexplained": ("0", True, 6), "Loaded, of what should be": ("100%", False, 6),
     "Last run completed": ("Yes", True, 1), "Households that failed to load": ("0", True, 1),
     "Households left out because a farmer's number is taken": ("0", False, 1),
-    "Households changed in Gen1 since they were migrated": ("Reviewed", False, 1),
+    "Households not compared with Gen1": ("Reviewed", False, 1), "Conflicts not settled": ("0", True, 1),
     "Farmer numbers not queued": ("0", False, 1), "Farmer numbers failed": ("0", False, 1),
     "Household numbers not queued": ("0", False, 1), "Household numbers failed": ("0", False, 1),
     "Completion scores failed": ("0", False, 1),

@@ -371,7 +371,7 @@ def test_the_overview_counts_checks(world):
     ws = workbook(world)["Overview"]
     rows = {r[0].value: [c.value for c in r] for r in ws.iter_rows() if r[0].value in (
         "Reconciliation", "Run health", "Quality", "IDs", "Total")}
-    assert {k: v[6] for k, v in rows.items()} == {"Reconciliation": 18, "Run health": 9, "Quality": 15, "IDs": 11, "Total": 53}
+    assert {k: v[6] for k, v in rows.items()} == {"Reconciliation": 30, "Run health": 10, "Quality": 15, "IDs": 11, "Total": 66}
     for v in rows.values():
         assert sum(v[2:6]) == v[6]
 

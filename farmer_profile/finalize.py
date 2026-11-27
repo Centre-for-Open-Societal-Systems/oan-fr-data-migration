@@ -63,6 +63,30 @@ SELECT gen_random_uuid()::text, {rid}, r.internal_record_id, s.section_id, 'PEND
     return out
 
 
+def requeue_scores(cur, models, gen2_ids) -> int:
+    """In the caller's transaction: these records were updated, so their completion scores are
+    computed again: a PENDING row per section, unless one is already waiting."""
+    ids, n = list(gen2_ids), 0
+    if not ids:
+        return n
+    cur.execute(_REGISTERS + " AND completion_score_required")
+    for register_id, mnemonic, _, _ in cur.fetchall():
+        cls = getattr(models, f"G2PRegister{mnemonic}", None)
+        if cls is None:
+            continue
+        cur.execute(f"""INSERT INTO g2p_completion_score_computation_queue
+       (queue_id, register_id, internal_record_id, section_id, compute_status, compute_number_of_attempts)
+SELECT gen_random_uuid()::text, %(rid)s, r.internal_record_id, s.section_id, 'PENDING', 0
+  FROM {cls.__tablename__} r
+  JOIN g2p_register_sections s ON s.register_id = %(rid)s AND (s.section_register_id = %(rid)s OR s.is_list)
+ WHERE r.internal_record_id = ANY(%(ids)s)
+   AND NOT EXISTS (SELECT 1 FROM g2p_completion_score_computation_queue q
+                    WHERE q.register_id = %(rid)s AND q.internal_record_id = r.internal_record_id
+                      AND q.section_id = s.section_id AND q.compute_status = 'PENDING')""", {"rid": register_id, "ids": ids})
+        n += cur.rowcount
+    return n
+
+
 def queue(engine, log, completion_scores=True, before=None) -> dict:
     """before(cur) runs first in the transaction."""
     counts = {}

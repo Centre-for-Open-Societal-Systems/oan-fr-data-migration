@@ -18,7 +18,14 @@
 # 5. Verify: the same Job with args ["verify.py"] (a new name, e.g. farmer-profile-verify).
 #
 # To go on after a stop, a crash or a fix: delete the Job and apply it again. What is
-# already in is skipped. The Job shows as Failed when households failed (exit code 3: the
+# already in is skipped.
+# Changes in farmer profile after the migration: the same, later. A run with --all updates
+# what changed, sets what is gone INACTIVE, and lists conflicts (households edited in the
+# registry too: not touched). Conflicts end the run with exit code 3, so the Job shows Failed:
+# see the sheet Conflicts, and settle them, one or more households at a time:
+#   ["migrate.py", "--resolve", "household-12", "solo-40"]    keep the registry as it is
+#   ["migrate.py", "--overwrite", "household-12", "solo-40"]  write farmer profile over the registry's edits
+# The Job shows as Failed when households failed (exit code 3: the
 # rest is in) and when it stopped early (exit code 1): its log's summary says which.
 # Only one run works at a time. TARGET_DSN must reach Postgres directly: the lock that
 # ensures it does not survive PgBouncer's transaction pooling.
@@ -55,6 +62,7 @@ spec:
           #   ["migrate.py", "--limit", "100", "--dry-run"]
           #   ["migrate.py", "--all", "--batch-size", "500"]
           #   ["verify.py"]
+          #   ["health.py"]
           args: ["migrate.py", "--all", "--batch-size", "500"]
           env:
             - name: MDS_API_URL
@@ -70,7 +78,7 @@ spec:
             - name: runs
               mountPath: /out
           resources:
-            requests: {cpu: 500m, memory: 1Gi}
+            requests: {cpu: "2", memory: 1Gi}   # 4 workers: estimated 15 minutes to compare 600,000 farmers (scaled from a laptop test)
             limits: {memory: 3Gi}
       volumes:
         - name: runs

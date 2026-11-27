@@ -10,6 +10,8 @@
 #   ./run.sh fresh        reset + migrate + verify, in one go
 #   ./run.sh health       how healthy the migration is: health-report.xlsx
 #   ./run.sh status       how far the migration is, and what is open
+#   ./run.sh resolve KEY...    conflicts settled: keep the registry as it is for these households
+#   ./run.sh overwrite KEY...  conflicts settled: write farmer profile over the registry's edits
 #   ./run.sh summary      show the latest summaries
 #   ./run.sh report       open the latest Excel report
 #   ./run.sh reset        empty the local registry database
@@ -39,7 +41,7 @@ use_local_master_data() {
 # --all unless farmers are picked
 selection() {
   for a in "$@"; do
-    case "$a" in --all|--limit|--limit=*|--ids|--finalize-only|--status) return 0;; esac
+    case "$a" in --all|--limit|--limit=*|--ids|--finalize-only|--status|--resolve|--overwrite) return 0;; esac
   done
   return 1
 }
@@ -63,6 +65,8 @@ case "$step" in
     ;;
   dry-run) migrate --dry-run "$@" ;;
   migrate) migrate "$@" ;;
+  resolve) "$HERE/dev/py.sh" migrate --resolve "$@" ;;
+  overwrite) migrate --overwrite "$@" ;;
   sql) migrate --sql-out "$@" ;;
   apply)
     file=${1:-$(latest migrate)/migration.sql}

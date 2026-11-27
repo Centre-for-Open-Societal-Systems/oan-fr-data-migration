@@ -165,48 +165,6 @@ def test_a_missing_gen1_column_is_nobodys_fault(world):
     assert code == 1 and "could not be prepared" in out and not world.progress()
 
 
-CHANGES = {
-    "joins a household": lambda w: w.household(9005, 10, 60, head=60),
-    "leaves the household": lambda w: w.source("UPDATE g2p_group_membership SET is_ended = true WHERE individual = 2"),
-    "a new member": lambda w: (w.farmers(1, 500), w.household(9001, 500, head=1)),
-    "another head": lambda w: w.source("UPDATE g2p_group_membership_g2p_group_membership_kind_rel SET "
-                                       "g2p_group_membership_kind_id = 5 - g2p_group_membership_kind_id"),
-    "another primary phone": lambda w: (
-        w.source("UPDATE g2p_phone_number SET phone_type = 'secondary' WHERE partner_id = 10"),
-        w.source("INSERT INTO g2p_phone_number (id, partner_id, phone_no, phone_type) VALUES (9999, 10, '0922000001', 'primary')")),
-    "another land": lambda w: w.source("INSERT INTO g2p_land_information (id, partner_id, total_land_area) VALUES (9999, 10, 2)"),
-    "another name": lambda w: w.source("UPDATE res_partner SET given_name = 'X' WHERE id = 10"),
-}
-
-
-@pytest.mark.parametrize("change", CHANGES)
-def test_what_changed_since_it_was_migrated_is_reported_not_touched(world, change):
-    world.farmers(60)
-    world.household(9001, 1, 2)
-    assert world.migrate()[0] == 0
-    before = world.contents()
-    CHANGES[change](world)
-    code, out = world.migrate()
-    assert code == 0, out[-2000:]
-    # a farmer who left is a household of their own now: not loaded twice either
-    assert world.contents() == before
-    assert "CHANGED" in world.progress().values() and world.issues("changed")
-    assert world.rows("SELECT link_internal_record_id FROM g2p_register_household_members WHERE is_head "
-                      "GROUP BY 1 HAVING count(*) > 1") == []
-
-
-def test_a_change_that_is_undone_is_no_change(world):
-    world.farmers(60)
-    world.migrate()
-    world.source("UPDATE res_partner SET given_name = 'X' WHERE id = 10")
-    world.migrate()
-    assert world.progress()["solo-10"] == "CHANGED"
-    assert "(farmers)" in world.issues("changed")[0][1]
-    world.source("UPDATE res_partner SET given_name = 'Abebe10' WHERE id = 10")
-    world.migrate()
-    assert world.progress()["solo-10"] == "LOADED" and not world.issues("changed")
-
-
 def test_a_migrated_record_that_cannot_be_read_any_more_is_not_failed(world):
     world.farmers(60)
     world.migrate()
@@ -348,10 +306,11 @@ def test_the_report(world):
     world.source("UPDATE res_partner SET given_name = 'X' WHERE id = 11")
     world.migrate()
     wb = openpyxl.load_workbook(world.folder() / "migration-report.xlsx")
-    assert wb.sheetnames == ["Health", "Summary", "Failed households", "Changed in Gen1", "Issues summary", "Issues", "Runs",
-                             "Batches", "Mapping - Gen1 fields", "Mapping - Gen2 columns", "Mapping - key"]
+    assert wb.sheetnames == ["Health", "Summary", "Failed households", "Conflicts", "Updated", "Set inactive",
+                             "Not compared", "Issues summary", "Issues", "Runs", "Batches", "Mapping - Gen1 fields",
+                             "Mapping - Gen2 columns", "Mapping - key"]
     assert wb["Failed households"]["A2"].value == "solo-10"
-    assert wb["Changed in Gen1"]["A2"].value == "solo-11"
+    assert wb["Updated"]["B2"].value == "solo-11"
     assert wb["Runs"].max_row == 3
     assert [r[2].value for r in wb["Runs"].iter_rows(min_row=2)] == ["COMPLETED_WITH_FAILURES"] * 2  # this run's end too
 

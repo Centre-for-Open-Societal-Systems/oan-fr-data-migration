@@ -114,8 +114,8 @@ the folders are the record of every run. `out/` is not committed.
 | `summary.txt` | both | The summary printed at the end of the run. For a migration: records read, added and already there; farmer profile fields per status, and how many hold data; registry columns per status, and how many are filled; what was queued after the load; the data that didn't reach the registry; the issues by kind. For a verification: the verdict and every check that didn't pass. |
 | `migrate.log` / `verify.log` | both | The full log, also printed: settings (passwords masked), every batch with its counts and time, errors with their traceback, and the summary |
 | `summary.json` | both | The same counts, for scripts |
-| `migration-report.xlsx` | migrate | Sheets: Health, Summary, Failed households, Changed in Gen1, Issues summary, Issues, Runs, Batches, and the mapping (see "Reports" below) |
-| `issues.csv` | migrate | Every issue, of every run so far: a household that failed or has changed, a value left out, a record not migrated, or something worth a look. A dry run lists its own only |
+| `migration-report.xlsx` | migrate | Sheets: Health, Summary, Failed households, Conflicts, Updated, Set inactive, Not compared, Issues summary, Issues, Runs, Batches, and the mapping (see "Reports" below) |
+| `issues.csv` | migrate | Every issue, of every run so far: a household that failed or is a conflict, a value left out, a record not migrated, or something worth a look. A dry run lists its own only |
 | `migration.sql` | migrate with `sql` / `--sql-out` | The load as one SQL transaction, to review and run with psql (`./run.sh apply` locally) |
 | `health-report.xlsx` | health | The health metrics: Overview, Reconciliation, Run health, Quality, IDs, the splits, Trend. Counts only |
 | `verify-report.xlsx` | verify | Sheets: Summary with the verdict, Checks, Columns (values compared per column), Differences |
@@ -197,6 +197,64 @@ dev/fake-mds.sh CROP_TEFF,ET04041110        # Master Data without teff and one k
 ./run.sh migrate
 ```
 
+## Changes in farmer profile after the migration
+
+If farmer profile is still used after the migration, **run the same command,
+`migrate.py --all`, again** (for the Job: delete it and apply it again). It
+compares every household with what was migrated, and brings what changed. For
+600,000 farmers that is estimated at about 15 minutes, scaled from a laptop test
+(20,000 farmers compared in 29 seconds with 4 workers); expect more against
+production over the network:
+
+| In farmer profile since | In the registry |
+|---|---|
+| a new farmer or household | added |
+| a value changed (name, phone type, land size, ...) | **written over** with farmer profile's |
+| a new phone, land, crop or member | added to the household |
+| a member left, moved or became head | memberships rebuilt: the old ones INACTIVE, the new ones added |
+| archived or deleted, a phone disabled, a land or crop removed | **set INACTIVE**, never deleted |
+| archived, then restored | active again |
+
+> **Farmer profile wins, unless the registry has edited the household.** A
+> household that staff have changed in the registry since it was migrated is not
+> touched, whatever changed in farmer profile: it is a **conflict**. The run lists
+> it (sheet Conflicts) and ends with exit code 3. A person decides, for each
+> household, which side to keep.
+
+**Settling conflicts.** Both commands take one or more household keys (column
+Household of the sheet Conflicts), separated by spaces. Neither runs over the
+other households.
+
+| Command | The registry | Later |
+|---|---|---|
+| `migrate.py --resolve household-12 solo-40` | **Kept as it is.** Nothing in it changes. Farmer profile's change is recorded as seen; records farmer profile no longer has stay active (`KEPT`) | The household stays edited: if farmer profile changes it again, it is a conflict again |
+| `migrate.py --overwrite household-12 solo-40` | **Farmer profile's version is written over the registry's edits**, as for any update: values written over, records added, records farmer profile no longer has set inactive. Each value the registry had is kept in `migration.change` as `OVERWRITTEN`, with the value before | Edits made before the overwrite no longer count: farmer profile's next changes are brought. A new edit in the registry makes it a conflict again |
+
+To make the change in the registry by hand, do it there, then `--resolve` the
+household. Locally: `./run.sh resolve <household> ...` and `./run.sh overwrite
+<household> ...`. Both take the run lock, like a migration, and are recorded in
+`migration.run`. `--overwrite` can be tried with `--dry-run` first.
+
+"Edited in the registry" means its history has a row for the record that the
+migration did not write: the registry writes one for every approved change. A
+change made in the registry's database directly, without history, is not seen.
+
+What is kept on an update: the farmer and household numbers (`FR-`, `HH-`), who
+created the record and when, and what the registry's own workers fill in. The
+completion scores of updated farmers are queued to be computed again. Each
+value written over, record added and record set inactive is in the table
+`migration.change` and in the report's sheets Updated and Set inactive. Updates
+write no record history: the history of farmer profile's changes comes with the
+history migration.
+
+Only an `--all` run sets records inactive: with `--ids` or `--limit`, a farmer
+not asked for may simply not have been chosen. `--dry-run` shows what would
+change, and keeps nothing. `--sql-out` only adds records: it refuses when
+something is to be updated or set inactive.
+
+Run `verify` and `health` after each such run. `verify` does not compare a
+household the registry has edited (a warning, not a failure).
+
 ## Stopping, resuming and fixing
 
 **The household is migrated whole or not at all:** the household, its members, and
@@ -211,6 +269,7 @@ records, so the two can't disagree, whenever the run is killed.
 |---|---|
 | Exit 0 | Everything loaded. Run `verify` |
 | Exit 3: some households failed | The rest is in. Fix them in farmer profile (sheet "Failed households") and run again: only they are tried again |
+| Exit 3: conflicts | The rest is in. See "Changes in farmer profile after the migration" below |
 | Exit 1: stopped early | Read why at the top of the summary, then run again |
 | Killed | Run again |
 | "another migration run is active" | Only one run works at a time. Wait for it |
@@ -221,14 +280,12 @@ What happens to each household:
 |---|---|
 | new, or failed before | migrated |
 | already in, the same in farmer profile | skipped, without preparing it again |
-| already in, **changed** in farmer profile since | **reported, not touched.** Correct it in the registry |
+| already in, **changed** in farmer profile since | **updated in the registry**, unless the registry has edited it since: then a **conflict**, not touched |
+| no longer in farmer profile (archived, deleted, no longer in its household) | **set INACTIVE** at the end of an `--all` run, unless the registry has edited the household: a conflict |
 | in the registry from before these tables existed | adopted, if all its records are there; reported if only some are |
 
-> **Fix what a dry run reports before the real load.** Once a household is in, a
-> fix in farmer profile, a new land or a new member does not reach the registry:
-> the household is reported as changed. Completely new households still load.
-
-Kinds of issue: `failed` (household left out), `changed` (not touched), `skipped`
+Kinds of issue: `failed` (household left out), `conflict` (changed in both: not
+touched), `changed` (in, but could not be compared with farmer profile), `skipped`
 (a record not migrated), `dropped` (a value left out), `check` (migrated, worth a
 look). Each is kept once, `OPEN` until a run finds it gone, then `RESOLVED`.
 
@@ -240,12 +297,31 @@ marks a household as failed.
 
 **Another source is refused.** The run remembers farmer profile's own
 `database.uuid`. Another database may use the same Odoo ids for other people. If
-it really is the same data (Odoo gives a copy a new uuid), confirm with
-`--accept-source <uuid>`.
+it really is the same data, confirm with `--accept-source <uuid>`.
+
+`database.uuid` is the ID Odoo gives a database when it is created. It is kept in
+Odoo's settings table. To read it, on the farmer profile database:
+
+```sql
+SELECT value FROM ir_config_parameter WHERE key = 'database.uuid';
+```
+
+The first run saves it with every run. To see what the registry was migrated
+from, on the registry database:
+
+```sql
+SELECT run_id, started_at, source_uuid FROM migration.run ORDER BY started_at;
+```
+
+A copy made with `pg_dump` and restored keeps the same `database.uuid`. One
+made with Odoo's "duplicate database" gets a new one, and is refused until you
+confirm it. The refusal message shows both IDs, and the `--accept-source`
+command to run.
 
 **The tables** are in the schema `migration` of the registry's database
 (`deploy/migration-schema.sql`): `run`, `household_progress`, `migrated_record`,
-`issue`. A run creates them if it may; otherwise a DBA runs the file. They hold
+`issue`, `change`. A run creates them, or brings an earlier version's up to date,
+if it may; otherwise a DBA runs the file (running it again is safe). They hold
 personal data: give them the access rules of the register tables. A dry run
 doesn't write them.
 

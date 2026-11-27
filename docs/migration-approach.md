@@ -28,10 +28,32 @@ We propose using a controlled ETL pipeline to migrate data from the Gen1 Odoo Fa
 - Deterministic IDs will make reruns consistent.
 - The household is migrated whole or not at all; one that fails is recorded and left out, and the rest go on.
 - Progress and issues are kept in audit tables in the Gen2 database, written with the records, so a stopped run resumes where it left off.
-- A household that changed in Gen1 after it was migrated is reported and not touched.
+- Running the migration again after the full load brings Gen1's changes (see "Changes in Gen1 after the migration" below).
 - Only one run works at a time, and a different Gen1 database is refused.
 - `ON CONFLICT DO NOTHING` will prevent duplicate insertion.
 - Dry-run mode will execute the migration and roll back all changes.
 - Invalid and unmapped values will be recorded in issue reports.
 - Every run will produce logs, summaries, CSV details and formatted Excel reports using `openpyxl`.
 - The pipeline will be tested with `pytest` before production execution.
+
+## Changes in Gen1 after the migration
+
+If Gen1 is still used after the full migration, the same command, `migrate.py --all`, is run again. It compares every household with what was migrated (estimated at about 15 minutes for 600,000 farmers, scaled from a 20,000-farmer test on a laptop; a rehearsal will give the real figure) and brings only what changed:
+
+| In Gen1 since the household was migrated | In Gen2, if staff have not edited the household | If staff have edited it in Gen2 |
+|---|---|---|
+| New farmer or household | Added | — |
+| Values changed | Written over with Gen1's | **Conflict**: not touched |
+| New phone, land, crop or member | Added | Conflict |
+| Members moved, left, or a new head | Memberships rebuilt | Conflict |
+| Archived or deleted | Set INACTIVE, never deleted | Conflict |
+
+**Gen1 overwrites Gen2, unless Gen2 has been edited.** A household that staff have edited in Gen2 since it was migrated is not overwritten by a run. It is listed as a conflict, for a person to decide, household by household. Both commands take one or more households:
+
+- `migrate.py --resolve <household> ...` keeps Gen2 as it is.
+- `migrate.py --overwrite <household> ...` writes Gen1 over the edits made in Gen2. The values Gen2 had are kept in the audit table.
+
+- Kept on every update: the farmer and household numbers, who created the record and when, and what Gen2's own workers fill in.
+- Every change is recorded in the audit table `migration.change` and in the report.
+- Only a run over every farmer (`--all`) sets records inactive.
+- `verify` and `health` are run again after each such run.

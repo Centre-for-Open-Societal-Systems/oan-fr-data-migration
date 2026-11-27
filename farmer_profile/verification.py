@@ -195,8 +195,17 @@ def progress_checks(engine, models, checks, left_out):
     failed, changed = left_out["FAILED"], left_out["CHANGED"]
     checks.add("Progress", "no household failed", 0, len(failed),
                detail=("not in the registry: " + ", ".join(failed[:20])) if failed else "")
-    checks.add("Progress", "no household changed in farmer profile since it was migrated", 0, len(changed), warn_only=True,
-               detail=("not compared; correct them in the registry: " + ", ".join(changed[:20])) if changed else "")
+    checks.add("Progress", "no household changed in farmer profile since the last run", 0, len(changed), warn_only=True,
+               detail=("not compared; the next run of migrate.py --all updates them: " + ", ".join(changed[:20]))
+               if changed else "")
+    conflict = left_out["CONFLICT"]
+    checks.add("Progress", "no conflict: changed in farmer profile and edited in the registry", 0, len(conflict),
+               warn_only=True, detail=("not compared; see the migration report, sheet Conflicts: " + ", ".join(conflict[:20]))
+               if conflict else "")
+    edited = left_out["EDITED"]
+    checks.add("Progress", "no household edited in the registry since it was migrated", 0, len(edited), warn_only=True,
+               detail=("not compared: the registry's values are the ones that count now: " + ", ".join(edited[:20]))
+               if edited else "")
     for kind, n in tracking.missing_records(engine, models).items():
         checks.add("Progress", f"every {kind} recorded as migrated is in the registry", 0, n)
 
@@ -207,7 +216,9 @@ def existing_members(engine, models, wanted) -> list:
     with engine.connect() as conn:
         for i in range(0, len(wanted), 10000):
             of = {rid: key for key, rid in wanted[i:i + 10000]}
-            for rid in conn.execute(text(f"SELECT internal_record_id FROM {table} WHERE internal_record_id = ANY(:ids)"),
+            # one set inactive (the farmer joined a household since) is not a household of their own any more
+            for rid in conn.execute(text(f"SELECT internal_record_id FROM {table} WHERE internal_record_id = ANY(:ids) "
+                                         "AND record_status IS DISTINCT FROM 'INACTIVE'"),
                                     {"ids": list(of)}).scalars():
                 out.add(of[rid])
     return sorted(out)
@@ -228,13 +239,15 @@ def structure_checks(one, models, checks, mine):
                 f"(SELECT 1 FROM {t(parent)} p WHERE p.internal_record_id = c.link_internal_record_id)")
         checks.add("Registry", f"every {child} links to a {parent}", 0, n)
 
-    n = one(f"""SELECT count(*) FROM {t('Household')} h WHERE {mine('h')} AND
+    # records set inactive (no longer in farmer profile) are no household's head or farmer's number
+    live = lambda x: f"{x}.record_status IS DISTINCT FROM 'INACTIVE'"  # noqa: E731
+    n = one(f"""SELECT count(*) FROM {t('Household')} h WHERE {mine('h')} AND {live('h')} AND
                 (SELECT count(*) FROM {t('HouseholdMember')} m
-                  WHERE m.link_internal_record_id = h.internal_record_id AND m.is_head) <> 1""")
+                  WHERE m.link_internal_record_id = h.internal_record_id AND m.is_head AND {live('m')}) <> 1""")
     checks.add("Registry", "every household has exactly one head member", 0, n)
 
     n = one(f"""SELECT count(*) FROM (SELECT p.link_internal_record_id FROM {t('FarmerPhone')} p WHERE {mine('p')}
-                GROUP BY 1 HAVING count(*) FILTER (WHERE is_primary) <> 1) x""")
+                AND {live('p')} GROUP BY 1 HAVING count(*) FILTER (WHERE is_primary) <> 1) x""")
     checks.add("Registry", "every farmer with a phone has exactly one primary number", 0, n)
 
 

@@ -38,10 +38,11 @@ def mapping_exceptions(source_fields: list) -> list:
 def _overall(totals: dict) -> list[str]:
     out = [f"{'Households, over all runs':34}{'households':>12}{'farmers':>10}"]
     for status, label in (("LOADED", "in the registry"), ("FAILED", "failed, not in the registry"),
-                          ("CHANGED", "in; changed in farmer profile")):
+                          ("CONFLICT", "conflict: edited in both"), ("CHANGED", "in, not compared"),
+                          ("REMOVED", "no longer in farmer profile")):
         n, farmers = totals["households"].get(status, (0, 0))
         out.append(f"  {label:32}{n:>12}{farmers:>10}")
-    issues = ", ".join(f"{s} {totals['open'][s]}" for s in ("failed", "changed", "skipped", "dropped", "check")
+    issues = ", ".join(f"{s} {totals['open'][s]}" for s in ("failed", "conflict", "changed", "skipped", "dropped", "check")
                        if totals["open"].get(s)) or "none"
     out.append(f"  Open issues: {issues}; resolved: {totals['resolved']}")
     return out
@@ -81,7 +82,7 @@ def migration(info: dict, data: dict, source_fields: list, target_cols: list, is
 
     add(f"Households in this run: {households['planned']} planned")
     for word, n in households.items():
-        if word not in ("planned", "records added", "remaining") and n:
+        if word not in ("planned", "remaining") and isinstance(n, int) and n:
             add(f"  {word:32}{n:>12}")
     add(f"  {'remaining':32}{households['remaining']:>12}")
     add("")
@@ -105,9 +106,32 @@ def migration(info: dict, data: dict, source_fields: list, target_cols: list, is
             add(f"  ... {len(failed) - MAX_LISTED} more in migration-report.xlsx")
         add("  Fix them in farmer profile and run the same command again.")
         add("")
+    changes = data.get("changes_counted") or {}
+    if changes:
+        add("Records that were in, changed to match farmer profile in this run" + (" (rolled back)" if dry_run else ""))
+        for action, label in (("UPDATED", "values written over"),
+                              ("OVERWRITTEN", "values written over the registry's edits (--overwrite)"),
+                              ("ADDED", "records added to households that were in"),
+                              ("ACTIVE_AGAIN", "made active again"), ("SET_INACTIVE", "set inactive: no longer in "
+                                                                                       "farmer profile")):
+            if changes.get(action):
+                add(f"  {label:58}{changes[action]:>8}")
+        add("  Every one is in migration-report.xlsx, sheets Updated and Set inactive")
+        add("")
+    conflicts = data.get("conflicts") or []
+    if conflicts:
+        keys = list(dict.fromkeys(c["household_key"] for c in conflicts))
+        add(f"Conflicts ({len(keys)} households): changed in farmer profile, and edited in the registry since they were "
+            "migrated: not touched")
+        for c in conflicts[:MAX_LISTED]:
+            add(f"  {c['household_key']}: {c['reason'][:160]}")
+        if len(conflicts) > MAX_LISTED:
+            add(f"  ... {len(conflicts) - MAX_LISTED} more in migration-report.xlsx, sheet Conflicts")
+        add("  Decide each one. To keep the registry as it is:  migrate.py --resolve <household> ...")
+        add("  To write farmer profile over the registry's edits:  migrate.py --overwrite <household> ...")
+        add("")
     if data["changed"]:
-        add(f"Changed in farmer profile since they were migrated ({len(data['changed'])}): not touched; correct them in "
-            "the registry")
+        add(f"Not compared with farmer profile ({len(data['changed'])}): not touched")
         for h in data["changed"][:MAX_LISTED]:
             add(f"  {h['household_key']}: {h['what']}")
         if len(data["changed"]) > MAX_LISTED:
@@ -162,7 +186,8 @@ def migration(info: dict, data: dict, source_fields: list, target_cols: list, is
     for (severity, *_), n in issue_counts.items():
         by_severity[severity] += n
     add(f"{'Open issues, over all runs' if data['overall'] else 'Issues'}: {sum(by_severity.values())} "
-        f"(failed {by_severity['failed']}: household left out; changed {by_severity['changed']}: not touched; "
+        f"(failed {by_severity['failed']}: household left out; conflict {by_severity['conflict']}: edited in both, "
+        f"not touched; changed {by_severity['changed']}: not compared; "
         f"skipped {by_severity['skipped']}: record not migrated; dropped {by_severity['dropped']}: value left out; "
         f"check {by_severity['check']}: migrated, worth a look)")
     for (severity, entity, field, reason), n in issue_counts.most_common(MAX_LISTED):
