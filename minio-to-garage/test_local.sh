@@ -2,13 +2,21 @@
 # Local test of move_to_garage.sh: MinIO (same release as the image saved locally) and
 # Garage v2.1.0 in containers, 2,000 random test files (no real data), rclone in a container.
 # Usage: ./test_local.sh [workdir]   (removes its containers and network at the end)
+#   MINIO_IMG=minio/minio:latest ./test_local.sh   to use another MinIO image (Docker Hub no
+#   longer serves the pinned release: use one saved locally, ideally the production release)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 W="${1:-$(mktemp -d)}"; mkdir -p "$W"; W="$(cd "$W" && pwd)"
 NET=fpmove-test
 RC_IMG=rclone/rclone:1.68.2
-MINIO_IMG=minio/minio:RELEASE.2025-04-22T22-12-26Z
+MINIO_IMG="${MINIO_IMG:-minio/minio:RELEASE.2025-04-22T22-12-26Z}"
 GARAGE_IMG=dxflrs/garage:v2.1.0
+if ! docker image inspect "$MINIO_IMG" >/dev/null 2>&1 && ! docker pull -q "$MINIO_IMG" >/dev/null 2>&1; then
+  echo "test_local: MinIO image $MINIO_IMG is not available (Docker Hub no longer serves it)." >&2
+  echo "  Use one you have:  MINIO_IMG=minio/minio:latest $0" >&2
+  echo "  Local MinIO images: $(docker images --format '{{.Repository}}:{{.Tag}}' minio/minio | tr '\n' ' ')" >&2
+  exit 2
+fi
 pass=0; fail=0
 ok()  { echo "PASS: $*"; pass=$((pass+1)); }
 bad() { echo "FAIL: $*"; fail=$((fail+1)); }
@@ -114,6 +122,17 @@ grep -q "land-certificate-10-100010.webp" "$W"/logs/*-check-differ.txt && ok "th
 n=$(rc lsf old:documents | wc -l); [ "$n" -eq 2003 ] && ok "MinIO still has all 2003 files" || bad "MinIO has $n files"
 # 8. the key never appears in the logs
 if grep -rq -- "$MP\|$GS" "$W/logs"; then bad "a secret appears in the logs"; else ok "no secret in the logs"; fi
+# 8. list: every MinIO object, for the baseline
+M list >/dev/null && n=$(grep -c '"Path"' "$(ls "$W"/logs/*-minio-list.json | tail -1)") || n=0
+[ "$n" -eq 2003 ] && ok "list has all 2003 MinIO objects" || bad "list has $n objects"
+# 9. copyback (rollback): asks first; adds files new in Garage; never overwrites MinIO
+head -c 6000 /dev/urandom > "$W/after-switch.webp"; rc copyto "$W/after-switch.webp" garage:documents/land-certificate-2004-102004.webp
+if echo no | M copyback 1 >/dev/null 2>&1; then bad "copyback should stop without yes"; else ok "copyback stops unless told yes"; fi
+good10=$(rc md5sum old:documents/land-certificate-10-100010.webp | cut -d' ' -f1)
+YES=1 M copyback 1 >/dev/null && ok "copyback finished" || bad "copyback failed"
+rc lsf old:documents/land-certificate-2004-102004.webp | grep -q . && ok "a file added to Garage after the switch is back in MinIO" || bad "file not copied back"
+[ "$(rc md5sum old:documents/land-certificate-10-100010.webp | cut -d' ' -f1)" = "$good10" ] \
+  && ok "copyback does not overwrite a MinIO file (the damaged Garage copy stays out)" || bad "copyback overwrote a MinIO file"
 M size
 
 echo "RESULT: $pass passed, $fail failed"

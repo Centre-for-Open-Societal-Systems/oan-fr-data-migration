@@ -7,15 +7,17 @@
 #   [garage]  the new Garage (http://<GARAGE_IP>:3900, region us-east-1)
 # The keys live only in that file; this script never prints them.
 #
-# It only copies and compares. It never deletes or changes anything in MinIO,
-# and never deletes anything in Garage (no sync, no move, no purge). It never
-# replaces a file that is newer in Garage (--update), so a catchup after the
-# switch cannot overwrite a document the farmer profile wrote to Garage.
+# It only copies and compares. It never deletes anything (no sync, no move, no
+# purge) and changes nothing in MinIO, except 'copyback', which is for a rollback.
+# It never replaces a file that is newer in Garage (--update), so a catchup after
+# the switch cannot overwrite a document the farmer profile wrote to Garage.
 #
 #   ./move_to_garage.sh size            count files and bytes on both sides
 #   ./move_to_garage.sh copy            copy every document (safe to stop and run again)
 #   ./move_to_garage.sh check           compare every file: name, size and MD5
 #   ./move_to_garage.sh catchup [HOURS] copy only files added in the last HOURS (default 48)
+#   ./move_to_garage.sh list            list every MinIO object: key, size, date, type (the baseline)
+#   ./move_to_garage.sh copyback HOURS  ROLLBACK ONLY: copy files added to Garage in the last HOURS back to MinIO
 #
 # Every run writes a log under ./logs/ named with the date and time.
 # Exit code: 0 = done and clean, 1 = something is missing or different, 2 = usage/config error.
@@ -62,6 +64,33 @@ copy() {   # $1 = optional --max-age value
   fi
 }
 
+list() {
+  local out="$LOGS/$STAMP-minio-list.json"
+  echo "Listing every object in $SRC (key, size, date, type); list: $out"
+  rc lsjson "$SRC" --fast-list --recursive --files-only --metadata > "$out"
+  local n; n=$(grep -c '"Path"' "$out" || true)
+  echo "Listed $n objects."
+}
+
+copyback() {   # $1 = hours: Garage -> MinIO, only after a rollback to MinIO
+  local hours="$1" log="$LOGS/$STAMP-copyback-${1}h.log"
+  echo "ROLLBACK: copy the files added to $DST in the last $hours hours back to $SRC."
+  echo "This writes to MinIO: it only adds files MinIO does not have. It never overwrites or deletes."
+  if [ "${YES:-}" != "1" ]; then
+    read -r -p "Type yes to go on: " answer
+    [ "$answer" = "yes" ] || { echo "Stopped: nothing copied."; exit 1; }
+  fi
+  local extra=()
+  [ -n "$BWLIMIT" ] && extra+=(--bwlimit "$BWLIMIT")
+  if rc copy "$DST" "$SRC" "${common[@]}" -M --ignore-existing --max-age "${hours}h" --transfers "$TRANSFERS" \
+        --checkers "$CHECKERS" "${extra[@]}" --log-file "$log"; then
+    echo "Copy back finished without errors; log: $log"
+  else
+    echo "Copy back ended with errors: see $log. Run the same command again." >&2
+    exit 1
+  fi
+}
+
 check() {
   local base="$LOGS/$STAMP-check"
   echo "Comparing every file in $SRC with $DST (name, size, MD5); reports: $base-*.txt"
@@ -90,5 +119,8 @@ case "${1:-}" in
   catchup) hours="${2:-48}"; [[ "$hours" =~ ^[0-9]+$ ]] || die "catchup takes a whole number of hours"
            copy "${hours}h" "catchup-${hours}h" ;;
   check)   check ;;
-  *)       sed -n '2,24p' "$0"; exit 2 ;;
+  list)    list ;;
+  copyback) hours="${2:-}"; [[ "$hours" =~ ^[0-9]+$ ]] || die "copyback takes the number of hours since the switch"
+           copyback "$hours" ;;
+  *)       sed -n '2,23p' "$0"; exit 2 ;;
 esac
