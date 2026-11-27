@@ -33,6 +33,12 @@ Order during the move: `copy` (off-hours) → `check` (must show 0 missing, 0 di
 → `catchup` once a day until the switch → on switch day: `catchup`, switch the farmer
 profile to Garage, `catchup` again, final `check`.
 
+The copy never replaces a file that is newer in Garage (rclone `--update`), so the
+`catchup` after the switch cannot overwrite a document the farmer profile has
+already written to Garage. Before the switch this changes nothing: Garage only has
+what was copied from MinIO. After the switch, the final `check` lists such a file
+as different; that is expected, and the Garage version is the one to keep.
+
 Options (environment): `BWLIMIT=50M` to slow the copy if MinIO gets slow for users,
 `TRANSFERS` / `CHECKERS` (default 32 / 64), `BUCKET` (default `documents`).
 
@@ -53,7 +59,7 @@ Need Docker. Images are pinned: `minio/minio:RELEASE.2025-04-22T22-12-26Z`,
 `dxflrs/garage:v2.1.0`, `rclone/rclone:1.68.2`.
 
 ```
-./test_local.sh                     # moving script: 12 checks
+./test_local.sh                     # moving script: 14 checks
 PYTHON=<python with minio==7.2.15> \
 FP_PYTHONS="<python with boto3==1.15.18> <python with boto3==1.35.36>" \
 REGION=us-east-1 ./test_gen2_client.sh
